@@ -1,0 +1,9 @@
+/.pixi/
+/.gradle/
+/.gradle-user-home/
+/app/build/
+/build/
+/local.properties
+/web/node_modules/
+/.npm-cache/
+/.android-sdk/

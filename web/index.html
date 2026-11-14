@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#050607" />
+  <title>NightField</title>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>NightField</h1>
+        <p>RAW Bayer temporal radiance accumulator</p>
+      </div>
+      <span id="status">booting</span>
+    </header>
+
+    <canvas id="view"></canvas>
+
+    <section class="controls">
+      <label>Exposure <output id="exposureOut">50 ms</output>
+        <input id="exposure" type="range" min="1" max="500" value="50" step="1" />
+      </label>
+      <label>ISO <output id="isoOut">800</output>
+        <input id="iso" type="range" min="100" max="3200" value="800" step="50" />
+      </label>
+      <label>Display gain <output id="gainOut">2.0×</output>
+        <input id="gain" type="range" min="0.25" max="12" value="2" step="0.05" />
+      </label>
+      <div class="buttons">
+        <button id="start">Start RAW</button>
+        <button id="stop">Stop</button>
+        <button id="reset">Reset history</button>
+      </div>
+    </section>
+
+    <pre id="stats"></pre>
+    <pre id="log"></pre>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
