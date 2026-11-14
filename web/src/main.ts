@@ -14,6 +14,7 @@ const iso = $('iso') as HTMLInputElement;
 const gain = $('gain') as HTMLInputElement;
 const duration = $('duration') as HTMLSelectElement;
 const display = $('display') as HTMLSelectElement;
+const cameraSelect = $('cameraSelect') as HTMLSelectElement;
 const startButton = $('start') as HTMLButtonElement;
 const stopButton = $('stop') as HTMLButtonElement;
 const resetButton = $('reset') as HTMLButtonElement;
@@ -32,7 +33,10 @@ let starting = false;
 let nativeStartPending = false;
 let stopping = false;
 let working = false;
+let switchingCamera = false;
 let windowTimer: ReturnType<typeof setTimeout> | undefined;
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+let cameraInfo: Record<string, unknown> | null = null;
 let sessionStartedAt = '';
 let stopReason = '';
 let reportFrames: Record<string, unknown>[] = [];
@@ -47,12 +51,13 @@ function line(message: string) {
   log.textContent = `${new Date().toLocaleTimeString()} ${message}\n${log.textContent}`.slice(0, 6000);
 }
 function controls() {
-  const active = capturing || starting || stopping || working;
+  const active = capturing || starting || stopping || working || switchingCamera;
   startButton.disabled = active || !selectedCaps?.manual || selectedCaps.cfa > 3;
   stopButton.disabled = !capturing && !starting;
   resetButton.disabled = active;
   exportButton.disabled = active || !accumulator?.series.frames;
-  exposure.disabled = iso.disabled = duration.disabled = active;
+  exposure.disabled = iso.disabled = duration.disabled = cameraSelect.disabled = active;
+  $('recordIndicator').classList.toggle('active', capturing);
 }
 async function ensureGpu() {
   if (!gpuPromise) {
@@ -76,6 +81,8 @@ function resetReport() {
   totalBytes = 0;
   lastStatsLines = [];
   stats.textContent = '';
+  $('framesHud').textContent = '0000';
+  $('timer').textContent = '00:00:00';
 }
 function stopCapture(reason: string) {
   if (!capturing && !starting) return;
@@ -85,6 +92,7 @@ function stopCapture(reason: string) {
   stopping = stopNative;
   nativeStartPending = false;
   clearTimeout(windowTimer);
+  clearInterval(clockTimer);
   if (stopNative) bridge.stop();
   status.textContent = stopNative ? 'stopping' : 'stopped';
   line(reason);
@@ -106,9 +114,19 @@ function showStats() {
 const bridge = new Bridge();
 bridge.onEvent = event => {
   if (event.type === 'capabilities') {
+    switchingCamera = false;
     selectedCaps = event.selected as CameraCaps ?? null;
+    const cameras = Array.isArray(event.cameras) ? event.cameras as { id: string; raw: boolean; manual: boolean; facing: number | null }[] : [];
+    cameraSelect.replaceChildren(...cameras.filter(camera => camera.raw).map(camera => {
+      const facing = camera.facing === 1 ? 'задняя' : camera.facing === 0 ? 'фронтальная' : 'другая';
+      const option = new Option(`${camera.id} · ${facing}${camera.manual ? '' : ' · без ручного режима'}`, camera.id);
+      option.selected = camera.id === selectedCaps?.id;
+      return option;
+    }));
+    if (!cameraSelect.options.length) cameraSelect.add(new Option('RAW-камера не найдена', ''));
     status.textContent = selectedCaps?.manual && selectedCaps.cfa <= 3 ? 'RAW ready' : 'manual Bayer RAW required';
     if (selectedCaps) {
+      $('cameraHud').textContent = `ID ${selectedCaps.id} · ${selectedCaps.cropSize}`;
       exposure.min = String(Math.max(1, Math.ceil(selectedCaps.exposureMinNs / 1e6)));
       exposure.max = String(Math.max(Number(exposure.min), Math.min(2000, Math.floor(selectedCaps.exposureMaxNs / 1e6))));
       exposure.value = String(Math.max(Number(exposure.min), Math.min(Number(exposure.max), 250)));
@@ -125,16 +143,33 @@ bridge.onEvent = event => {
     starting = false;
     nativeStartPending = false;
     capturing = true;
-    status.textContent = 'capturing fixed RAW';
+    status.textContent = 'REC · RAW';
+    const started = performance.now();
+    clearInterval(clockTimer);
+    clockTimer = setInterval(() => {
+      const seconds = Math.floor((performance.now() - started) / 1000);
+      $('timer').textContent = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map(n => String(n).padStart(2, '0')).join(':');
+    }, 250);
     line(`requested: ${JSON.stringify(event)}`);
     const seconds = Number(duration.value);
     if (seconds) windowTimer = setTimeout(() => stopCapture(`${seconds}-second observation window finished`), seconds * 1000);
   } else if (event.type === 'stopped') {
     capturing = starting = stopping = nativeStartPending = false;
+    clearInterval(clockTimer);
     nativeStats = event;
     if (!working) status.textContent = 'stopped';
     line(`native totals: ${JSON.stringify(event)}`);
+  } else if (event.type === 'cameraInfo') {
+    cameraInfo = event;
+    $('cameraInfo').textContent = JSON.stringify(event, null, 2);
+    $('cameraInfoStatus').textContent = `Получено камер: ${Array.isArray(event.cameras) ? event.cameras.length : 0}. Отсутствующие значения зависят от устройства и разрешений.`;
+    ($('requestCamera') as HTMLButtonElement).disabled = false;
+    ($('saveCamera') as HTMLButtonElement).disabled = false;
+  } else if (event.type === 'cameraInfoError') {
+    $('cameraInfoStatus').textContent = `Ошибка запроса: ${String(event.message)}`;
+    ($('requestCamera') as HTMLButtonElement).disabled = false;
   } else if (event.type === 'error') {
+    switchingCamera = false;
     stopCapture('Capture stopped after an error');
     stopping = false;
     status.textContent = 'error';
@@ -153,6 +188,9 @@ bridge.onBinary = async buffer => {
     const frame = parseRawFrame(buffer);
     const gpu = await ensureGpu();
     const timing = await gpu.add(frame);
+    $('framesHud').textContent = String(gpu.series.frames).padStart(4, '0');
+    $('exposureHud').textContent = `${Number(frame.exposureNs) / 1e6} ms`;
+    $('isoHud').textContent = String(frame.iso);
     totalBytes += buffer.byteLength;
     const now = performance.now();
     let diagnosticReadMs = 0;
@@ -195,11 +233,33 @@ function updateLabels() {
   ($('exposureOut') as HTMLOutputElement).value = `${exposure.value} ms`;
   ($('isoOut') as HTMLOutputElement).value = iso.value;
   ($('gainOut') as HTMLOutputElement).value = `${Number(gain.value).toFixed(2)}×`;
+  if (!capturing) {
+    $('exposureHud').textContent = `${exposure.value} ms`;
+    $('isoHud').textContent = iso.value;
+  }
+  $('gainHud').textContent = `${Number(gain.value).toFixed(2)}×`;
   accumulator?.setDisplayGain(Number(gain.value));
   accumulator?.setDisplayNoise(display.value === 'noise');
   accumulator?.render();
 }
 exposure.oninput = iso.oninput = gain.oninput = display.onchange = updateLabels;
+cameraSelect.onchange = async () => {
+  if (!cameraSelect.value) return;
+  const id = cameraSelect.value;
+  switchingCamera = true;
+  controls();
+  try {
+    await accumulator?.reset();
+    resetReport();
+    accumulator?.render();
+    bridge.send({ type: 'selectCamera', id });
+  } catch (error) {
+    switchingCamera = false;
+    cameraSelect.value = selectedCaps?.id ?? '';
+    line(`Camera selection error: ${String(error)}`);
+    controls();
+  }
+};
 updateLabels();
 controls();
 
@@ -258,3 +318,20 @@ exportButton.onclick = async () => {
   finally { working = false; controls(); }
 };
 window.addEventListener('resize', () => accumulator?.render());
+
+const settingsDialog = $('settingsDialog') as HTMLDialogElement;
+const infoDialog = $('infoDialog') as HTMLDialogElement;
+$('settingsOpen').onclick = () => settingsDialog.showModal();
+$('infoOpen').onclick = () => infoDialog.showModal();
+document.querySelectorAll<HTMLButtonElement>('[data-close]').forEach(button => {
+  button.onclick = () => ($(button.dataset.close!) as HTMLDialogElement).close();
+});
+$('requestCamera').onclick = () => {
+  if (!window.rawBridge) { $('cameraInfoStatus').textContent = 'Запрос доступен в приложении на Android.'; return; }
+  ($('requestCamera') as HTMLButtonElement).disabled = true;
+  $('cameraInfoStatus').textContent = 'Получение характеристик…';
+  bridge.send({ type: 'cameraInfo' });
+};
+$('saveCamera').onclick = () => {
+  if (cameraInfo) bridge.send({ type: 'saveReport', json: JSON.stringify(cameraInfo, null, 2) });
+};

@@ -53,6 +53,8 @@ class NativeBridge(
                     "stop" -> camera.stop()
                     "ack" -> frameInFlight.compareAndSet(cmd.optInt("frameId"), 0)
                     "caps" -> sendJson(camera.capabilities())
+                    "selectCamera" -> sendJson(camera.capabilities(cmd.getString("id")))
+                    "cameraInfo" -> camera.requestDiagnostics()
                     "saveReport" -> {
                         val json = cmd.getString("json")
                         require(json.length <= 4_000_000) { "Report is too large" }

@@ -9,6 +9,8 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.os.Build
+import android.hardware.camera2.params.StreamConfigurationMap
 import android.util.Size
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,6 +45,94 @@ class RawCamera(
     private var received = 0
     private var droppedBusy = 0
     private var droppedMetadata = 0
+    @Volatile private var lastResult: TotalCaptureResult? = null
+
+    private fun jsonValue(value: Any?): Any = when (value) {
+        null -> JSONObject.NULL
+        is String, is Boolean, is Int, is Long -> value
+        is android.util.Rational -> JSONObject().put("numerator", value.numerator).put("denominator", value.denominator)
+        is Number -> if (value.toDouble().isFinite()) value else value.toString()
+        is android.util.Range<*> -> JSONObject().put("lower", jsonValue(value.lower)).put("upper", jsonValue(value.upper))
+        is android.util.Size -> JSONObject().put("width", value.width).put("height", value.height)
+        is android.util.SizeF -> JSONObject().put("width", value.width).put("height", value.height)
+        is android.graphics.Rect -> JSONObject().put("left", value.left).put("top", value.top).put("right", value.right).put("bottom", value.bottom)
+        is android.util.Pair<*, *> -> JSONArray().put(jsonValue(value.first)).put(jsonValue(value.second))
+        is android.hardware.camera2.params.BlackLevelPattern -> JSONArray().also { out ->
+            for (y in 0..1) for (x in 0..1) out.put(value.getOffsetForIndex(x, y))
+        }
+        is android.hardware.camera2.params.ColorSpaceTransform -> JSONArray().also { rows ->
+            for (y in 0..2) rows.put(JSONArray().also { row -> for (x in 0..2) row.put(jsonValue(value.getElement(x, y))) })
+        }
+        is android.hardware.camera2.params.RggbChannelVector -> JSONArray().put(value.red).put(value.greenEven).put(value.greenOdd).put(value.blue)
+        is StreamConfigurationMap -> {
+            val formats = JSONArray()
+            for (format in value.outputFormats) {
+                val sizes = JSONArray()
+                for (size in value.getOutputSizes(format).orEmpty()) {
+                    sizes.put(JSONObject().put("size", jsonValue(size))
+                        .put("minFrameDurationNs", value.getOutputMinFrameDuration(format, size))
+                        .put("stallDurationNs", value.getOutputStallDuration(format, size)))
+                }
+                formats.put(JSONObject().put("format", format).put("sizes", sizes))
+            }
+            JSONObject().put("outputFormats", formats).put("inputFormats", jsonValue(value.inputFormats))
+                .put("highSpeedVideoSizes", jsonValue(value.highSpeedVideoSizes))
+        }
+        else -> if (value.javaClass.isArray) {
+            JSONArray().also { array ->
+                for (index in 0 until java.lang.reflect.Array.getLength(value)) array.put(jsonValue(java.lang.reflect.Array.get(value, index)))
+            }
+        } else value.toString()
+    }
+
+    fun requestDiagnostics() {
+        handler.post {
+            try {
+                val cameras = JSONArray()
+                val ids = manager.cameraIdList.toMutableList()
+                var index = 0
+                while (index < ids.size) {
+                    val id = ids[index++]
+                    val entry = JSONObject().put("id", id)
+                    try {
+                        val chars = manager.getCameraCharacteristics(id)
+                        val values = JSONObject()
+                        for (key in chars.keys) {
+                            try {
+                                @Suppress("UNCHECKED_CAST")
+                                values.put(key.name, jsonValue(chars.get(key as CameraCharacteristics.Key<Any>)))
+                            } catch (t: Exception) { values.put(key.name, JSONObject().put("error", t.message ?: t.javaClass.simpleName)) }
+                        }
+                        entry.put("characteristics", values)
+                        entry.put("availableRequestKeys", JSONArray(chars.availableCaptureRequestKeys?.map { it.name }.orEmpty()))
+                        entry.put("availableResultKeys", JSONArray(chars.availableCaptureResultKeys?.map { it.name }.orEmpty()))
+                        if (Build.VERSION.SDK_INT >= 28) {
+                            val physical = chars.physicalCameraIds.toList()
+                            entry.put("physicalCameraIds", JSONArray(physical))
+                            entry.put("availableSessionKeys", JSONArray(chars.availableSessionKeys?.map { it.name }.orEmpty()))
+                            for (physicalId in physical) if (physicalId !in ids) ids.add(physicalId)
+                        }
+                    } catch (t: Exception) { entry.put("error", t.message ?: t.javaClass.simpleName) }
+                    cameras.put(entry)
+                }
+                val capture = lastResult?.let { result ->
+                    JSONObject().also { metadata ->
+                        for (key in result.keys) {
+                            try {
+                                @Suppress("UNCHECKED_CAST")
+                                metadata.put(key.name, jsonValue(result.get(key as CaptureResult.Key<Any>)))
+                            } catch (t: Exception) { metadata.put(key.name, JSONObject().put("error", t.message ?: t.javaClass.simpleName)) }
+                        }
+                    }
+                }
+                onEvent(JSONObject().put("type", "cameraInfo").put("androidApi", Build.VERSION.SDK_INT)
+                    .put("selectedCameraId", selected?.id ?: JSONObject.NULL).put("cameras", cameras)
+                    .put("latestCaptureResult", capture ?: JSONObject.NULL))
+            } catch (t: Exception) {
+                onEvent(JSONObject().put("type", "cameraInfoError").put("message", t.message ?: t.javaClass.simpleName))
+            }
+        }
+    }
 
     data class CameraInfo(
         val id: String,
@@ -65,7 +155,7 @@ class RawCamera(
         val maxFrameDuration: Long,
     )
 
-    fun capabilities(): JSONObject {
+    fun capabilities(preferredId: String? = null): JSONObject {
         val cameras = JSONArray()
         var preferred: CameraInfo? = null
 
@@ -86,11 +176,14 @@ class RawCamera(
                 .put("rawSizes", JSONArray(rawSizes.map { "${it.width}x${it.height}" }))
             cameras.put(item)
 
-            if (facing != CameraCharacteristics.LENS_FACING_BACK || !hasRaw || rawSizes.isEmpty()) continue
+            if (!hasRaw || rawSizes.isEmpty()) continue
+            if (preferredId != null && id != preferredId) continue
+            if (preferredId == null && facing != CameraCharacteristics.LENS_FACING_BACK) continue
             val info = makeInfo(id, chars, rawSizes)
             if (preferred == null || (manual && !preferred.manual)) preferred = info
         }
 
+        if (preferred?.id != selected?.id) lastResult = null
         selected = preferred
         val root = JSONObject().put("type", "capabilities").put("cameras", cameras)
         if (preferred != null) root.put("selected", infoJson(preferred))
@@ -183,6 +276,7 @@ class RawCamera(
         droppedBusy = 0
         droppedMetadata = 0
         lastTimestamp = 0L
+        lastResult = null
         active = true
         val token = generation
 
@@ -263,6 +357,7 @@ class RawCamera(
                         s.setRepeatingRequest(b.build(), object : CameraCaptureSession.CaptureCallback() {
                             override fun onCaptureCompleted(s: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
                                 if (token != generation) return
+                                lastResult = result
                                 val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
                                 results[timestamp] = result
                                 while (results.size > 16) results.remove(results.keys.first())

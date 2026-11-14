@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -7,44 +7,44 @@
   <title>NightField</title>
 </head>
 <body>
-  <main>
-    <header>
-      <div>
-        <h1>NightField</h1>
-        <p>RAW Bayer temporal radiance accumulator</p>
-      </div>
-      <span id="status">booting</span>
-    </header>
-
-    <canvas id="view"></canvas>
-
-    <section class="controls">
-      <label>Exposure <output id="exposureOut">250 ms</output>
-        <input id="exposure" type="range" min="1" max="1000" value="250" step="1" />
-      </label>
-      <label>ISO <output id="isoOut">800</output>
-        <input id="iso" type="range" min="100" max="3200" value="800" step="50" />
-      </label>
-      <label>Display gain <output id="gainOut">2.0×</output>
-        <input id="gain" type="range" min="0.25" max="12" value="2" step="0.05" />
-      </label>
-      <label>Observation window
-        <select id="duration"><option value="32">32 seconds</option><option value="0">Until stopped</option></select>
-      </label>
-      <label>View
-        <select id="display"><option value="mean">Accumulated signal</option><option value="noise">Temporal noise</option></select>
-      </label>
-      <p>Static scene · fixed ISO and exposure · focus at infinity. Stop before changing capture settings.</p>
-      <div class="buttons">
-        <button id="start">Start RAW</button>
-        <button id="stop">Stop</button>
-        <button id="reset">Reset history</button>
-        <button id="export" disabled>Save report</button>
-      </div>
+  <main class="app">
+    <section class="finder" aria-label="Видоискатель">
+      <canvas id="view"></canvas>
+      <div class="shade"></div>
+      <div class="frame-corner tl"></div><div class="frame-corner tr"></div>
+      <div class="frame-corner bl"></div><div class="frame-corner br"></div>
+      <div class="hud-top"><div class="brand"><span class="brand-mark">✳</span> NIGHTFIELD <span class="edition">/ RAW LAB</span></div><div class="hud-status"><span id="recordIndicator" class="record-dot"></span><span id="status">Подключение</span></div></div>
+      <div class="timecode"><span id="timer">00:00:00</span><small>ВРЕМЯ НАБЛЮДЕНИЯ</small></div>
+      <div class="reticle" aria-hidden="true"><i></i><i></i><i></i><i></i><span></span></div>
+      <div class="finder-bottom"><div><small>РЕЖИМ СЪЁМКИ</small><strong>RAW <span> / </span> STATIC</strong></div><div class="finder-metrics"><small>КАМЕРА</small><strong id="cameraHud">ОЖИДАНИЕ</strong></div><div class="finder-metrics"><small>КАДРЫ</small><strong id="framesHud">0000</strong></div></div>
     </section>
 
-    <pre id="stats"></pre>
-    <pre id="log"></pre>
+    <section class="controlbar">
+      <div class="quick"><span>EXPOSURE <b id="exposureHud">250 ms</b></span><span>ISO <b id="isoHud">800</b></span><span>GAIN <b id="gainHud">2.00×</b></span></div>
+      <div class="actions"><button id="settingsOpen" class="icon-button" aria-label="Настройки камеры">☰<span>НАСТРОЙКИ</span></button><div class="capture-actions"><button id="start" class="shutter" aria-label="Начать съёмку"><span></span></button><button id="stop" class="stop-button">СТОП</button></div><button id="infoOpen" class="icon-button" aria-label="Информация о камере">ⓘ<span>КАМЕРА</span></button></div>
+      <p class="hint">Установите телефон неподвижно и начните накопление RAW</p>
+    </section>
+
+    <dialog id="settingsDialog" class="sheet"><div class="sheet-head"><div><small>НАСТРОЙКИ</small><h2>Камера и съёмка</h2></div><button class="close" data-close="settingsDialog" aria-label="Закрыть">×</button></div>
+      <div class="settings-list">
+        <div class="section-title">ПАРАМЕТРЫ СЕНСОРА <span>FIXED</span></div>
+        <label class="select-row">Камера<select id="cameraSelect"><option>Поиск…</option></select></label>
+        <label>Выдержка <output id="exposureOut">250 ms</output><input id="exposure" type="range" min="1" max="1000" value="250" step="1" /><small>Ограничения определяются камерой</small></label>
+        <label>Светочувствительность <output id="isoOut">800</output><input id="iso" type="range" min="100" max="3200" value="800" step="1" /></label>
+        <label class="select-row">Время накопления<select id="duration"><option value="32">32 секунды</option><option value="0">До остановки</option></select></label>
+        <p class="note">Фокус зафиксирован на бесконечности. Выдержка и ISO блокируются во время съёмки; фактические значения доступны в диагностике.</p>
+        <div class="section-title">ОТОБРАЖЕНИЕ <span>DISPLAY</span></div>
+        <label>Усиление экрана <output id="gainOut">2.00×</output><input id="gain" type="range" min="0.25" max="12" value="2" step="0.05" /><small>Не меняет данные сенсора</small></label>
+        <label class="select-row">Изображение<select id="display"><option value="mean">Накопленный сигнал</option><option value="noise">Временной шум</option></select></label>
+        <div class="secondary-actions"><button id="reset">Сбросить накопление</button><button id="export" disabled>Сохранить отчёт</button></div>
+      </div></dialog>
+
+    <dialog id="infoDialog" class="sheet"><div class="sheet-head"><div><small>УСТРОЙСТВО</small><h2>Информация о камере</h2></div><button class="close" data-close="infoDialog" aria-label="Закрыть">×</button></div>
+      <p class="note">Android перечислит доступные характеристики всех камер. Метаданные последнего кадра появятся после начала съёмки.</p>
+      <div class="secondary-actions"><button id="requestCamera" class="primary">Запросить информацию</button><button id="saveCamera" disabled>Сохранить JSON</button></div>
+      <p id="cameraInfoStatus" class="info-status">Запрос ещё не выполнен</p><pre id="cameraInfo"></pre>
+      <details><summary>Диагностика накопления</summary><pre id="stats"></pre><pre id="log"></pre></details>
+    </dialog>
   </main>
   <script type="module" src="/src/main.ts"></script>
 </body>

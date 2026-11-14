@@ -75,6 +75,8 @@ That does `adb reverse tcp:5173 tcp:5173` and reopens the Activity with `http://
 
 ## First test
 
+The viewfinder has separate **Настройки** (camera and capture settings) and **Камера** panels. The camera selector lists Camera2 devices advertising RAW; the static experiment additionally requires manual sensor control and a supported Bayer CFA. Changing camera clears the current accumulation. **Запросить информацию** enumerates the Camera2 characteristics exposed for every camera, including output formats, sizes, minimum frame durations and stall durations. It also includes the latest capture result if one has been received. **Сохранить JSON** opens Android's document picker. Camera2 may omit values, restrict them until camera permission is granted, or return vendor-specific values represented as text; per-key errors are included in the report.
+
 1. Put the phone on a stable support and aim at a stationary ground scene or an evenly lit target. Focus is fixed at infinity.
 2. Start with **250 ms**, **ISO 800** and the **32 seconds** window. Exposure/ISO are clamped to the camera's supported range; diagnostics show requested and actual values.
 3. Tap **Start RAW**. Capture controls remain fixed during a series. A change in actual exposure/ISO or Bayer geometry stops the series instead of mixing incompatible measurements.
