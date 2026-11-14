@@ -26,7 +26,7 @@ export class Bridge {
     window.rawBridge?.postMessage(JSON.stringify(message));
   }
 
-  ack() { this.send({ type: 'ack' }); }
+  ack(frameId: number) { this.send({ type: 'ack', frameId }); }
   start(exposureNs: number, iso: number) { this.send({ type: 'start', exposureNs, iso }); }
   stop() { this.send({ type: 'stop' }); }
 }

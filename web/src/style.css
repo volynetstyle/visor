@@ -70,6 +70,26 @@ input[type="range"] {
   width: 100%;
   margin-top: 10px;
 }
+select {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  margin-top: 8px;
+  padding: 6px;
+  color: #f2f2f2;
+  background: #171a1d;
+  border: 1px solid #30353a;
+  border-radius: 6px;
+}
+.controls > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #8e949a;
+  font-size: 12px;
+}
+button:disabled {
+  opacity: 0.45;
+}
 .buttons {
   grid-column: 1 / -1;
   display: flex;
@@ -112,6 +132,8 @@ pre {
   }
   .buttons {
     grid-column: auto;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
   }
   #view {
     height: 55vh;

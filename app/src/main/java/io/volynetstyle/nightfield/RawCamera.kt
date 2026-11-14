@@ -4,20 +4,22 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
-import android.hardware.camera2.params.BlackLevelPattern
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Size
 import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.min
 
 class RawCamera(
     context: Context,
-    private val onPacket: (ByteArray) -> Unit,
+    private val onPacket: (Int, () -> ByteArray) -> Boolean,
     private val onEvent: (JSONObject) -> Unit,
 ) {
     private val manager = context.getSystemService(CameraManager::class.java)
@@ -27,10 +29,20 @@ class RawCamera(
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
-    private var selected: CameraInfo? = null
-    private var exposureNs: Long = 50_000_000L
+    @Volatile private var selected: CameraInfo? = null
+    private var exposureNs: Long = 250_000_000L
     private var iso: Int = 800
     private val frameId = AtomicInteger(0)
+    private var generation = 0
+    private var active = false
+    private val results = LinkedHashMap<Long, TotalCaptureResult>()
+    private data class PendingImage(val image: Image, val id: Int, val intervalNs: Long)
+    private var pending: PendingImage? = null
+    private var pendingTimeout: Runnable? = null
+    private var lastTimestamp = 0L
+    private var received = 0
+    private var droppedBusy = 0
+    private var droppedMetadata = 0
 
     data class CameraInfo(
         val id: String,
@@ -48,6 +60,9 @@ class RawCamera(
         val whiteLevel: Int,
         val black: FloatArray,
         val sensorOrientation: Int,
+        val minFrameDuration: Long,
+        val stallDuration: Long,
+        val maxFrameDuration: Long,
     )
 
     fun capabilities(): JSONObject {
@@ -119,6 +134,11 @@ class RawCamera(
             whiteLevel = chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 4095,
             black = black,
             sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0,
+            minFrameDuration = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize) ?: 0L,
+            stallDuration = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputStallDuration(ImageFormat.RAW_SENSOR, rawSize) ?: 0L,
+            maxFrameDuration = chars.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: Long.MAX_VALUE,
         )
     }
 
@@ -137,34 +157,60 @@ class RawCamera(
         .put("whiteLevel", i.whiteLevel)
         .put("black", JSONArray(i.black.toList()))
         .put("sensorOrientation", i.sensorOrientation)
+        .put("minFrameDurationNs", i.minFrameDuration)
+        .put("stallDurationNs", i.stallDuration)
+        .put("timestampSource", i.chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE))
 
     @SuppressLint("MissingPermission")
     fun start(requestExposureNs: Long, requestIso: Int) {
+        handler.post { startOnCameraThread(requestExposureNs, requestIso) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startOnCameraThread(requestExposureNs: Long, requestIso: Int) {
+        stopOnCameraThread()
         val info = selected ?: run {
             onEvent(JSONObject().put("type", "error").put("message", "No RAW camera selected"))
             return
         }
-        stop()
-        exposureNs = requestExposureNs.coerceIn(info.exposureMin, info.exposureMax)
+        if (!info.manual || info.cfa !in 0..3) {
+            onEvent(JSONObject().put("type", "error").put("message", "Static experiment requires manual sensor controls and a Bayer CFA (RGGB/GRBG/GBRG/BGGR)"))
+            return
+        }
+        exposureNs = requestExposureNs.coerceIn(info.exposureMin, minOf(info.exposureMax, info.maxFrameDuration))
         iso = requestIso.coerceIn(info.isoMin, info.isoMax)
+        received = 0
+        droppedBusy = 0
+        droppedMetadata = 0
+        lastTimestamp = 0L
+        active = true
+        val token = generation
 
-        manager.openCamera(info.id, object : CameraDevice.StateCallback() {
+        try { manager.openCamera(info.id, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
+                if (token != generation) { camera.close(); return }
                 device = camera
-                createSession(camera, info)
+                createSession(camera, info, token)
             }
             override fun onDisconnected(camera: CameraDevice) {
                 camera.close()
+                if (token != generation) return
+                stopOnCameraThread()
                 onEvent(JSONObject().put("type", "error").put("message", "Camera disconnected"))
             }
             override fun onError(camera: CameraDevice, error: Int) {
                 camera.close()
+                if (token != generation) return
+                stopOnCameraThread()
                 onEvent(JSONObject().put("type", "error").put("message", "Camera error $error"))
             }
-        }, handler)
+        }, handler) } catch (t: Exception) {
+            stopOnCameraThread()
+            onEvent(JSONObject().put("type", "error").put("message", "Camera open failed: ${t.message}"))
+        }
     }
 
-    private fun createSession(camera: CameraDevice, info: CameraInfo) {
+    private fun createSession(camera: CameraDevice, info: CameraInfo, token: Int) {
         val imageReader = ImageReader.newInstance(
             info.rawSize.width,
             info.rawSize.height,
@@ -173,13 +219,20 @@ class RawCamera(
         )
         reader = imageReader
         imageReader.setOnImageAvailableListener({ r ->
+            if (token != generation) return@setOnImageAvailableListener
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                onPacket(copyCrop(image, info))
-            } catch (t: Throwable) {
-                onEvent(JSONObject().put("type", "error").put("message", "RAW copy failed: ${t.message}"))
-            } finally {
-                image.close()
+            received++
+            val interval = if (lastTimestamp == 0L) 0L else image.timestamp - lastTimestamp
+            lastTimestamp = image.timestamp
+            discardPending()
+            pending = PendingImage(image, frameId.incrementAndGet(), interval)
+            if (!deliverMatched(info)) {
+                val waiting = pending
+                val timeout = Runnable {
+                    if (pending === waiting) discardPending()
+                }
+                pendingTimeout = timeout
+                handler.postDelayed(timeout, 2000L)
             }
         }, handler)
 
@@ -187,6 +240,7 @@ class RawCamera(
             listOf(imageReader.surface),
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
+                    if (token != generation) { s.close(); return }
                     session = s
                     try {
                         val template = if (info.manual) CameraDevice.TEMPLATE_MANUAL else CameraDevice.TEMPLATE_PREVIEW
@@ -194,17 +248,30 @@ class RawCamera(
                         b.addTarget(imageReader.surface)
                         if (info.manual) {
                             b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
+                            b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                            if (info.chars.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)
+                                    ?.contains(CameraMetadata.CONTROL_AWB_MODE_OFF) == true) {
+                                b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+                            }
                             b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
                             b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
-                            val minFrame = info.chars
-                                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                                ?.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, info.rawSize)
-                                ?: 0L
-                            b.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(exposureNs, minFrame))
+                            b.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(exposureNs, info.minFrameDuration))
                             val minFocus = info.chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
                             if (minFocus > 0f) b.set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
                         }
-                        s.setRepeatingRequest(b.build(), object : CameraCaptureSession.CaptureCallback() {}, handler)
+                        s.setRepeatingRequest(b.build(), object : CameraCaptureSession.CaptureCallback() {
+                            override fun onCaptureCompleted(s: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                                if (token != generation) return
+                                val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                                results[timestamp] = result
+                                while (results.size > 16) results.remove(results.keys.first())
+                                deliverMatched(info)
+                            }
+                            override fun onCaptureFailed(s: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
+                                if (token == generation) onEvent(JSONObject().put("type", "captureFailed").put("reason", failure.reason))
+                            }
+                        }, handler)
                         onEvent(JSONObject()
                             .put("type", "started")
                             .put("exposureNs", exposureNs)
@@ -212,10 +279,13 @@ class RawCamera(
                             .put("rawSize", "${info.rawSize.width}x${info.rawSize.height}")
                             .put("cropSize", "${info.cropSize.width}x${info.cropSize.height}"))
                     } catch (t: Throwable) {
+                        stopOnCameraThread()
                         onEvent(JSONObject().put("type", "error").put("message", "Session start failed: ${t.message}"))
                     }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
+                    if (token != generation) return
+                    stopOnCameraThread()
                     onEvent(JSONObject().put("type", "error").put("message", "Capture session configuration failed"))
                 }
             },
@@ -223,7 +293,39 @@ class RawCamera(
         )
     }
 
-    private fun copyCrop(image: Image, info: CameraInfo): ByteArray {
+    private fun discardPending() {
+        pendingTimeout?.let { handler.removeCallbacks(it) }
+        pendingTimeout = null
+        pending?.let { it.image.close(); droppedMetadata++ }
+        pending = null
+    }
+
+    private fun deliverMatched(info: CameraInfo): Boolean {
+        val item = pending ?: return false
+        val result = results.remove(item.image.timestamp) ?: return false
+        pending = null
+        pendingTimeout?.let { handler.removeCallbacks(it) }
+        pendingTimeout = null
+        try {
+            val actualExposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+            val actualIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+            if (actualExposure == null || actualExposure <= 0L || actualIso == null || actualIso <= 0) {
+                droppedMetadata++
+                if (droppedMetadata == 1) onEvent(JSONObject().put("type", "log").put("message", "Dropping RAW without actual exposure/ISO metadata"))
+                return true
+            }
+            if (!onPacket(item.id) { copyCrop(item, info, result, actualExposure, actualIso) }) droppedBusy++
+        } catch (t: Exception) {
+            onEvent(JSONObject().put("type", "error").put("message", "RAW copy failed: ${t.message}"))
+        } finally {
+            item.image.close()
+        }
+        return true
+    }
+
+    private fun copyCrop(item: PendingImage, info: CameraInfo, result: TotalCaptureResult, actualExposure: Long, actualIso: Int): ByteArray {
+        val copyStart = SystemClock.elapsedRealtimeNanos()
+        val image = item.image
         val plane = image.planes[0]
         val src = plane.buffer.duplicate()
         val pixelStride = plane.pixelStride
@@ -254,7 +356,16 @@ class RawCamera(
             }
         }
 
-        return FramePacket.encodeRaw16(
+        val dynamicBlack = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+            ?.takeIf { it.size == 4 && it.all { v -> v.isFinite() && v >= 0f } }
+        val dynamicWhite = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)?.takeIf { it > 0 }
+        val noise = result.get(CaptureResult.SENSOR_NOISE_PROFILE)
+            ?.takeIf { it.size == 4 && it.all { p -> p.first.isFinite() && p.second.isFinite() && p.first >= 0 && p.second >= 0 } }
+        var flags = FramePacket.MATCHED_RESULT or FramePacket.MANUAL_SENSOR
+        if (dynamicBlack != null) flags = flags or FramePacket.DYNAMIC_BLACK
+        if (dynamicWhite != null) flags = flags or FramePacket.DYNAMIC_WHITE
+        if (noise != null) flags = flags or FramePacket.NOISE_PROFILE
+        val packet = FramePacket.encodeRaw16(
             payload = payload,
             width = w,
             height = h,
@@ -262,18 +373,38 @@ class RawCamera(
             sensorHeight = info.rawSize.height,
             cropX = info.cropX,
             cropY = info.cropY,
-            frameId = frameId.incrementAndGet(),
+            frameId = item.id,
             timestampNs = image.timestamp,
-            exposureNs = exposureNs,
-            iso = iso,
+            exposureNs = actualExposure,
+            iso = actualIso,
             cfa = info.cfa,
-            whiteLevel = info.whiteLevel,
-            black = info.black,
+            whiteLevel = dynamicWhite ?: info.whiteLevel,
+            black = dynamicBlack ?: info.black,
             sensorOrientation = info.sensorOrientation,
+            flags = flags,
+            requestedExposureNs = exposureNs,
+            requestedIso = iso,
+            frameDurationNs = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L,
+            noiseProfile = DoubleArray(8) { n -> if (n % 2 == 0) noise?.get(n / 2)?.first ?: 0.0 else noise?.get(n / 2)?.second ?: 0.0 },
+            captureIntervalNs = item.intervalNs,
+            received = received,
+            droppedBusy = droppedBusy,
+            droppedMetadata = droppedMetadata,
         )
+        ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN).putLong(200, SystemClock.elapsedRealtimeNanos() - copyStart)
+        return packet
     }
 
     fun stop() {
+        handler.post { stopOnCameraThread() }
+    }
+
+    private fun stopOnCameraThread() {
+        generation++
+        val wasActive = active
+        active = false
+        discardPending()
+        results.clear()
         try { session?.stopRepeating() } catch (_: Throwable) {}
         try { session?.close() } catch (_: Throwable) {}
         try { device?.close() } catch (_: Throwable) {}
@@ -281,10 +412,14 @@ class RawCamera(
         session = null
         device = null
         reader = null
+        if (wasActive) onEvent(JSONObject().put("type", "stopped")
+            .put("received", received).put("droppedBusy", droppedBusy).put("droppedMetadata", droppedMetadata))
     }
 
     fun close() {
-        stop()
-        thread.quitSafely()
+        handler.post {
+            stopOnCameraThread()
+            thread.quitSafely()
+        }
     }
 }

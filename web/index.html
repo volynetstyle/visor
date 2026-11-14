@@ -19,8 +19,8 @@
     <canvas id="view"></canvas>
 
     <section class="controls">
-      <label>Exposure <output id="exposureOut">50 ms</output>
-        <input id="exposure" type="range" min="1" max="500" value="50" step="1" />
+      <label>Exposure <output id="exposureOut">250 ms</output>
+        <input id="exposure" type="range" min="1" max="1000" value="250" step="1" />
       </label>
       <label>ISO <output id="isoOut">800</output>
         <input id="iso" type="range" min="100" max="3200" value="800" step="50" />
@@ -28,10 +28,18 @@
       <label>Display gain <output id="gainOut">2.0×</output>
         <input id="gain" type="range" min="0.25" max="12" value="2" step="0.05" />
       </label>
+      <label>Observation window
+        <select id="duration"><option value="32">32 seconds</option><option value="0">Until stopped</option></select>
+      </label>
+      <label>View
+        <select id="display"><option value="mean">Accumulated signal</option><option value="noise">Temporal noise</option></select>
+      </label>
+      <p>Static scene · fixed ISO and exposure · focus at infinity. Stop before changing capture settings.</p>
       <div class="buttons">
         <button id="start">Start RAW</button>
         <button id="stop">Stop</button>
         <button id="reset">Reset history</button>
+        <button id="export" disabled>Save report</button>
       </div>
     </section>
 

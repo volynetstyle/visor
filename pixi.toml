@@ -11,4 +11,5 @@ openjdk = "21.*"
 web-install = { cmd = "npm ci", cwd = "web" }
 web-build = { cmd = "npm run build", cwd = "web" }
 web-dev = { cmd = "npm run dev", cwd = "web" }
+test = { cmd = "npm test", cwd = "web" }
 build = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1"
