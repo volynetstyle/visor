@@ -43,14 +43,11 @@ if (-not (Test-Path -LiteralPath $gradle)) {
 
 $env:PIXI_HOME = Join-Path $pixiRoot "home"
 $env:PIXI_CACHE_DIR = Join-Path $pixiRoot "cache"
-$env:npm_config_cache = Join-Path $root ".npm-cache"
 Push-Location $root
 try {
     & $pixi install --locked
     if ($LASTEXITCODE -ne 0) { throw "Pixi install failed ($LASTEXITCODE)" }
-    & $pixi run web-install
-    if ($LASTEXITCODE -ne 0) { throw "npm ci failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location
 }
-Write-Host "Environment ready. Build with: .\.pixi\bin\pixi.exe run build"
+Write-Host "Environment ready. Build with: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run.ps1 build"

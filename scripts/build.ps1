@@ -5,7 +5,6 @@ if (-not (Test-Path -LiteralPath $gradle)) {
     throw "Local Gradle is missing. Run scripts/bootstrap.ps1 first."
 }
 $env:GRADLE_USER_HOME = Join-Path $root ".gradle-user-home"
-$env:npm_config_cache = Join-Path $root ".npm-cache"
 $projectSdk = Join-Path $root ".android-sdk"
 if (Test-Path -LiteralPath $projectSdk) {
     $env:ANDROID_HOME = $projectSdk
@@ -16,11 +15,6 @@ if (Test-Path -LiteralPath $projectSdk) {
 }
 Push-Location $root
 try {
-    Push-Location (Join-Path $root "web")
-    try {
-        & npm.cmd run build
-        if ($LASTEXITCODE -ne 0) { throw "Web build failed ($LASTEXITCODE)" }
-    } finally { Pop-Location }
     # Never install SDK packages into a shared SDK as a side effect of this command.
     $sdkDownload = if (Test-Path -LiteralPath $projectSdk) { "true" } else { "false" }
     & $gradle --no-daemon "-Pandroid.builder.sdkDownload=$sdkDownload" assembleDebug

@@ -1,15 +1,11 @@
 [workspace]
-name = "nightfield"
+name = "pure-camera"
 channels = ["conda-forge"]
 platforms = ["win-64"]
 
 [dependencies]
-nodejs = "22.*"
 openjdk = "21.*"
 
 [tasks]
-web-install = { cmd = "npm ci", cwd = "web" }
-web-build = { cmd = "npm run build", cwd = "web" }
-web-dev = { cmd = "npm run dev", cwd = "web" }
-test = { cmd = "npm test", cwd = "web" }
 build = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1"
+test = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1"

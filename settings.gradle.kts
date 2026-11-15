@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NightField"
+rootProject.name = "PureCamera"
 include(":app")

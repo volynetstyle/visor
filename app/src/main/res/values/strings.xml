@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Pure Camera</string>
+    <string name="flash_auto">ВСПЫШКА АВТО</string>
+    <string name="flash_on">ВСПЫШКА ВКЛ</string>
+    <string name="flash_off">ВСПЫШКА ВЫКЛ</string>
+    <string name="torch_on">ФОНАРЬ ВКЛ</string>
+    <string name="torch_off">ФОНАРЬ ВЫКЛ</string>
+    <string name="camera_permission">Разрешить доступ к камере</string>
+    <string name="camera_settings">Открыть настройки доступа к камере</string>
+    <string name="camera_retry">Камера недоступна. Нажмите, чтобы повторить</string>
+    <string name="camera_loading">Подключение камеры…</string>
+    <string name="saved_photo">Фото сохранено</string>
+    <string name="saved_video">Видео сохранено</string>
+    <string name="save_failed">Не удалось сохранить файл</string>
+    <string name="storage_permission_needed">Для сохранения нужен доступ к файлам</string>
+    <string name="video_silent">Видео будет записано без звука</string>
+    <string name="gallery_unavailable">Не удалось открыть галерею</string>
+    <string name="interface_failed">Не удалось открыть интерфейс. Запустите приложение заново</string>
+</resources>
