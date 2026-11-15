@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2020", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["contract/**/*.d.ts", "contract/generated/contract.ts", "core/**/*.ts", "hud/**/*.ts", "platforms/android/web/**/*.ts"]
+}

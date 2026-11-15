@@ -48,10 +48,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/run.ps1 test
 ```
 
 Node 22 установлен только в `.pixi/envs/web-check`; тесты используют встроенные
-`node:test`, `assert` и `vm`. esbuild 0.28.2 — локальный dev tool для минификации,
-без runtime-зависимостей. Среда и кэши находятся внутри
+`node:test`, `assert` и `vm`. TypeScript проверяется в строгом режиме отдельно
+для интерфейса и локальных инструментов. esbuild 0.28.2 компилирует TypeScript
+в минифицированный JavaScript для WebView без runtime-зависимостей. Среда и кэши находятся внутри
 проекта. Android `preBuild` автоматически запускает web-проверку, включая сборку
-из Android Studio. Проверяется актуальность generated bindings, затем формируется
+из Android Studio. Проверяется актуальность generated bindings и типы, затем формируется
 `hud/build/`, запускаются tests. В APK включается только этот каталог, тесты,
 fixtures и replay не попадают. Одноразовые RPC deadlines ограничены 16 pending
 командами и снимаются при settlement/dispose, в простое их нет.

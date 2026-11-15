@@ -9,6 +9,20 @@ $pixiUrl = "https://github.com/prefix-dev/pixi/releases/download/v0.81.0/pixi-x8
 $pixiHash = "1b989b152ea13e881a641a112c7ea59c51818fd5ba84924c763b40b9b157dab9"
 $gradle = Join-Path $pixiRoot "tools\gradle-9.6.0\bin\gradle.bat"
 $gradleHash = "bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01"
+$ktlint = Join-Path $pixiRoot "ktlint-1.8.0.jar"
+$ktlintHash = "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75"
+
+if (-not (Test-Path -LiteralPath $ktlint)) {
+    New-Item -ItemType Directory -Force -Path $pixiRoot | Out-Null
+    $download = "$ktlint.download"
+    try {
+        Invoke-WebRequest -Uri "https://github.com/ktlint/ktlint/releases/download/1.8.0/ktlint" -OutFile $download
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $download).Hash.ToLowerInvariant() -ne $ktlintHash) {
+            throw "ktlint checksum mismatch"
+        }
+        Move-Item -LiteralPath $download -Destination $ktlint -Force
+    } finally { Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue }
+}
 
 if (-not (Test-Path -LiteralPath $pixi)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $pixi) | Out-Null

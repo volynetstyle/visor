@@ -9,15 +9,19 @@ openjdk = "21.*"
 [tasks]
 build = "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build.ps1"
 test = "powershell -NoProfile -ExecutionPolicy Bypass -File tools/test.ps1"
+lint-kotlin = "powershell -NoProfile -ExecutionPolicy Bypass -File tools/ktlint.ps1"
+format-kotlin = "powershell -NoProfile -ExecutionPolicy Bypass -File tools/ktlint.ps1 -Format"
 
 [feature.web-check.dependencies]
 nodejs = "22.*"
 
 [feature.web-check.tasks]
 web-install = { cmd = "npm ci", cwd = "tools" }
-contract-generate = "node tools/generate-contract.cjs"
-replay = { cmd = "node core/replay/serve.cjs", depends-on = ["web-check"] }
-web-check = "node tools/generate-contract.cjs --check && node tools/build-web.cjs && node tools/test-web.cjs"
+contract-generate = "node tools/generate-contract.cts"
+lint-web = "npm --prefix tools run lint && npm --prefix tools run format:check"
+format-web = "npm --prefix tools run format"
+replay = { cmd = "node core/replay/serve.cts", depends-on = ["web-check"] }
+web-check = "node tools/generate-contract.cts --check && npm --prefix tools run lint && npm --prefix tools run format:check && node tools/node_modules/typescript/bin/tsc --project tsconfig.json && node tools/node_modules/typescript/bin/tsc --project tsconfig.tools.json && node tools/build-web.cts && node tools/test-web.cts"
 
 [environments]
 default = { features = [], solve-group = "default" }

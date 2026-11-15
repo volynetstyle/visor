@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("build", "test", "replay", "contract-generate")]
+    [ValidateSet("build", "test", "replay", "contract-generate", "lint-web", "format-web", "lint-kotlin", "format-kotlin")]
     [string] $Task = "build"
 )
 $ErrorActionPreference = "Stop"
@@ -13,7 +13,7 @@ $env:PIXI_HOME = Join-Path $pixiRoot "home"
 $env:PIXI_CACHE_DIR = Join-Path $pixiRoot "cache"
 Push-Location $root
 try {
-    if ($Task -in @("replay", "contract-generate")) { & $pixi run --locked --environment web-check $Task }
+    if ($Task -in @("replay", "contract-generate", "lint-web", "format-web")) { & $pixi run --locked --environment web-check $Task }
     else { & $pixi run $Task }
     if ($LASTEXITCODE -ne 0) { throw "Pixi task '$Task' failed ($LASTEXITCODE)" }
 } finally { Pop-Location }

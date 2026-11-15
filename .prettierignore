@@ -1,2 +1,5 @@
-hud/build/
-contract/generated/
+**/generated/**
+**/build/**
+**/node_modules/**
+.pixi/**
+.gradle-user-home/**

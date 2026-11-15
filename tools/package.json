@@ -1,5 +1,23 @@
 {
   "name": "visor-build-tools",
   "private": true,
-  "devDependencies": { "esbuild": "0.28.2" }
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "22.15.3",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.1",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.4"
+  },
+  "scripts": {
+    "lint": "cd .. && node tools/node_modules/eslint/bin/eslint.js --config tools/eslint.config.mjs \"core/**/*.{ts,cts}\" \"hud/**/*.ts\" \"platforms/android/web/**/*.ts\" \"contract/**/*.d.ts\" \"contract/conformance/**/*.cts\" \"tools/*.cts\"",
+    "format:check": "cd .. && node tools/node_modules/prettier/bin/prettier.cjs --check \"core/**/*.{ts,cts}\" \"hud/**/*.ts\" \"platforms/android/web/**/*.ts\" \"contract/**/*.d.ts\" \"contract/conformance/**/*.cts\" \"tools/*.cts\"",
+    "format": "cd .. && node tools/node_modules/prettier/bin/prettier.cjs --write \"core/**/*.{ts,cts}\" \"hud/**/*.ts\" \"platforms/android/web/**/*.ts\" \"contract/**/*.d.ts\" \"contract/conformance/**/*.cts\" \"tools/*.cts\""
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.8"
+    }
+  }
 }

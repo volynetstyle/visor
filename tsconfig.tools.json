@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "typeRoots": ["./tools/node_modules/@types"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "moduleDetection": "force"
+  },
+  "include": ["tools/**/*.cts", "core/replay/serve.cts", "contract/conformance/**/*.cts"],
+  "exclude": ["tools/node_modules"]
+}

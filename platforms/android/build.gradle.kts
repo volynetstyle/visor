@@ -14,7 +14,10 @@ android {
         versionName = "1.0.0"
     }
 
-    sourceSets.getByName("main").assets.directories.add("../../hud/build")
+    sourceSets
+        .getByName("main")
+        .assets.directories
+        .add("../../hud/build")
 }
 
 androidComponents {
@@ -35,13 +38,32 @@ dependencies {
 }
 
 // Every Android entry point (including Android Studio) verifies the UI contract.
-val checkWebPerformance = tasks.register<Exec>("checkWebPerformance") {
-    group = "verification"
-    description = "Check web UI scheduling, bridge and resource budgets"
-    workingDir(rootProject.projectDir)
-    commandLine(
-        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", rootProject.file("tools/web-check.ps1").absolutePath,
-    )
-}
-tasks.named("preBuild") { dependsOn(checkWebPerformance) }
+val checkWebPerformance =
+    tasks.register<Exec>("checkWebPerformance") {
+        group = "verification"
+        description = "Check web UI scheduling, bridge and resource budgets"
+        workingDir(rootProject.projectDir)
+        commandLine(
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            rootProject.file("tools/web-check.ps1").absolutePath,
+        )
+    }
+val checkKotlinStyle =
+    tasks.register<Exec>("checkKotlinStyle") {
+        group = "verification"
+        description = "Check Kotlin style against the existing baseline"
+        workingDir(rootProject.projectDir)
+        commandLine(
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            rootProject.file("tools/ktlint.ps1").absolutePath,
+        )
+    }
+tasks.named("preBuild") { dependsOn(checkWebPerformance, checkKotlinStyle) }

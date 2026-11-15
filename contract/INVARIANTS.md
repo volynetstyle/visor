@@ -26,7 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/run.ps1 contract-gener
 ```
 
 Генератор создаёт в `contract/generated/` TypeScript-, Kotlin-, Swift-типы
-и runtime definition `contract.js`.
+и runtime definition `contract.ts`; при сборке WebView получает `contract.js`.
 Команда `--check` обязательна для Android preBuild и отклоняет рассинхронизацию.
 Binding-файлы не редактируются вручную; форматтеры должны их пропускать.
 Генерируются value types и команды, а не CameraX/AVFoundation implementation.
@@ -81,7 +81,7 @@ RAW, linear video, accumulation и motion в Pure Camera объявлены unsu
 
 ## Replay и conformance
 
-`replay.js` исполняет те же сообщения с виртуальным clock. Recorded observations
+`replay.ts` исполняет те же сообщения с виртуальным clock. Recorded observations
 хранятся в `core/replay/scenario.json`; кнопка шага двигает время, фоновых таймеров
 в demo нет. Полный HUD работает без телефона:
 

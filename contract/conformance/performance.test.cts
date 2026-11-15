@@ -1,9 +1,9 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const { harness, state, touch } = require("./harness.cjs");
+const fs: typeof import("node:fs") = require("node:fs");
+const path: typeof import("node:path") = require("node:path");
+const { harness, state, touch } = require("./harness.cts");
 
 test("10,000 identical snapshots cause zero DOM writes and only one pending frame", () => {
   const h = harness();
@@ -38,7 +38,11 @@ test("reused state objects and inset objects cannot defeat the diff cache", () =
   h.render(s);
   h.frame();
   assert.equal(h.nodes.shutter.attributes["aria-label"], "Начать запись видео");
-  assert(h.writes.some(([id, property, value]) => id === "root" && property === "--top" && value === "30px"));
+  assert(
+    h.writes.some(
+      ([id, property, value]: any[]) => id === "root" && property === "--top" && value === "30px",
+    ),
+  );
 });
 
 test("pinch burst makes one native call, preserves total scale and flushes after finger release", () => {
@@ -48,7 +52,7 @@ test("pinch burst makes one native call, preserves total scale and flushes after
   const reads = h.viewportReads;
   // Both fingers can arrive in the same initial event.
   h.touch("touchstart", [touch(0), touch(100)]);
-  for (let i = 1; i <= 1000; i++) h.touch("touchmove", [touch(0), touch(100 + .3 * i)]);
+  for (let i = 1; i <= 1000; i++) h.touch("touchmove", [touch(0), touch(100 + 0.3 * i)]);
   h.touch("touchend", [], [touch(0), touch(400)]);
   assert.equal(h.frames.size, 1);
   assert.equal(h.calls.length, 0);
@@ -68,12 +72,12 @@ test("tap uses only transform/opacity animation and no timers or synchronous lay
   h.touch("touchstart", [touch(200, 400)]);
   h.touch("touchend", [], [touch(200, 400)]);
   h.frame();
-  assert.deepEqual(h.calls, [["focus", .5, .5]]);
+  assert.deepEqual(h.calls, [["focus", 0.5, 0.5]]);
   assert.equal(h.animations.length, 1);
   assert(h.animations[0].options.duration <= 1000);
   assert.notEqual(h.animations[0].options.iterations, Infinity);
   for (const keyframe of h.animations[0].keyframes) {
-    assert(Object.keys(keyframe).every(key => ["offset", "opacity", "transform"].includes(key)));
+    assert(Object.keys(keyframe).every((key) => ["offset", "opacity", "transform"].includes(key)));
   }
   assert.equal(h.viewportReads, reads);
   assert.equal(h.frames.size, 0);
@@ -99,7 +103,10 @@ test("hidden page cancels work, drops gestures and resumes with the latest state
 });
 
 test("cancelled and disabled gestures cannot leak a queued camera command", () => {
-  for (const cancel of [h => h.touch("touchcancel", []), h => h.render(state({ ready: false }))]) {
+  for (const cancel of [
+    (h: any) => h.touch("touchcancel", []),
+    (h: any) => h.render(state({ ready: false })),
+  ]) {
     const h = harness();
     h.render(state());
     h.frame();
@@ -133,29 +140,42 @@ test("idle UI has no callbacks, and controls cannot initiate camera gestures", (
 
 test("runtime fits budgets and stays a local, fixed DOM interface", () => {
   const root = path.join(__dirname, "../..");
-  const budget = JSON.parse(fs.readFileSync(path.join(root, "hud/performance-budget.json"), "utf8"));
+  const budget = JSON.parse(
+    fs.readFileSync(path.join(root, "hud/performance-budget.json"), "utf8"),
+  );
   const www = path.join(root, "hud");
   const artifact = path.join(root, "hud/build");
   assert.deepEqual(fs.readdirSync(artifact).sort(), Object.keys(budget.files).sort());
   let total = 0;
-  for (const [file, maximum] of Object.entries(budget.files)) {
+  for (const [file, maximum] of Object.entries(budget.files as Record<string, number>)) {
     const size = fs.statSync(path.join(artifact, file)).size;
     assert(size <= maximum, file + " exceeds its byte budget");
     total += size;
   }
   assert(total <= budget.totalBytes, "UI exceeds total byte budget");
   const html = fs.readFileSync(path.join(www, "index.html"), "utf8");
-  const js = fs.readFileSync(path.join(www, "hud.js"), "utf8");
+  const js = fs.readFileSync(path.join(www, "hud.ts"), "utf8");
   const css = fs.readFileSync(path.join(www, "style.css"), "utf8");
   assert((html.match(/<[a-z][\w-]*(?=[\s>])/gi) || []).length <= budget.maxDomElements);
   assert(!/<(?:canvas|video|iframe)\b/i.test(html), "Camera buffers stay native");
   assert(!/<script\b(?![^>]*\bsrc\s*=)/i.test(html), "Scripts must be local files");
   assert(!/\son\w+\s*=/i.test(html), "No inline event handlers");
-  assert(!/\b(?:import|require|fetch|WebSocket|XMLHttpRequest|setTimeout|setInterval|eval)\s*(?:\(|\{)/.test(js));
-  assert(!/innerHTML|outerHTML|createElement|appendChild|replaceChildren|getBoundingClientRect|offset(?:Width|Height|Top|Left)|client(?:Width|Height)|getComputedStyle/.test(js));
+  assert(
+    !/\b(?:import|require|fetch|WebSocket|XMLHttpRequest|setTimeout|setInterval|eval)\s*(?:\(|\{)/.test(
+      js,
+    ),
+  );
+  assert(
+    !/innerHTML|outerHTML|createElement|appendChild|replaceChildren|getBoundingClientRect|offset(?:Width|Height|Top|Left)|client(?:Width|Height)|getComputedStyle/.test(
+      js,
+    ),
+  );
   assert(!/backdrop-filter|\bfilter\s*:|will-change|@import|url\s*\(/i.test(css));
   for (const [, value] of css.matchAll(/transition\s*:\s*([^;}]+)/g)) {
-    assert(value.split(",").every(item => /^(transform|opacity|none)\b/.test(item.trim())), "Only transform/opacity may transition");
+    assert(
+      value.split(",").every((item) => /^(transform|opacity|none)\b/.test(item.trim())),
+      "Only transform/opacity may transition",
+    );
   }
   for (const [, resource] of html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g)) {
     assert(Object.hasOwn(budget.files, resource), "Resource must be bundled: " + resource);

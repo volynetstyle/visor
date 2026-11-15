@@ -15,14 +15,17 @@
 - `contract/model.json` — семантическая модель experimental/v0;
   `contract/protocol.json` — отдельный wire-протокол версии 1.
 - `core/` — переносимое исполнение и replay; `hud/` — визуальная проекция.
+  Исходники интерфейса, ядра, адаптера и локальных инструментов написаны на
+  TypeScript; типы камеры генерируются из модели контракта.
 - `platforms/android/` — WebHost, мост и CameraX-backend; только платформа
   исполняет доступ к устройству. Сгенерированные типы лежат в `contract/generated/`.
 - `tools/` — локальные средства генерации, проверки и сборки.
 
 Инварианты скорости UI и бюджеты описаны в [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 Они проверяются автоматически в Android preBuild. Отдельная локальная среда
-Pixi `web-check` содержит Node 22. Закреплённый esbuild устанавливается локально
-только для сборки; runtime-библиотек нет. В APK включается `hud/build/`.
+Pixi `web-check` содержит Node 22. TypeScript и esbuild устанавливаются локально
+только для проверки и сборки; runtime-библиотек нет. Сборка проверяет типы в
+строгом режиме и формирует JavaScript в `hud/build/` для WebView и APK.
 Описание контракта и replay: [contract/INVARIANTS.md](contract/INVARIANTS.md).
 
 ## Сборка в Windows
@@ -63,3 +66,17 @@ Debug APK: `platforms/android/build/outputs/apk/debug/android-debug.apk`. У п�
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run.ps1 test
 ```
+
+Проверка и исправление стиля выполняются локально:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run.ps1 lint-web
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run.ps1 format-web
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run.ps1 lint-kotlin
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\run.ps1 format-kotlin
+```
+
+ESLint, Prettier и ktlint проверяются при Android-сборке. Существующие замечания
+Kotlin сохранены в `.ktlint-baseline.xml`: новые нарушения не должны добавляться;
+`format-kotlin` применяет автоформатирование ко всем исходникам Kotlin. Генерируемые
+файлы не форматируются вручную. Все инструменты устанавливаются внутри проекта.
