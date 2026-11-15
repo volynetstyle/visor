@@ -27,6 +27,6 @@ export class Bridge {
   }
 
   ack(frameId: number) { this.send({ type: 'ack', frameId }); }
-  start(exposureNs: number, iso: number) { this.send({ type: 'start', exposureNs, iso }); }
+  start(exposureNs: number, iso: number, rotationHistory=false) { this.send({ type: 'start', exposureNs, iso, rotationHistory }); }
   stop() { this.send({ type: 'stop' }); }
 }

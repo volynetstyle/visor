@@ -6,7 +6,7 @@ import java.nio.ByteOrder
 
 /** Binary wire format consumed by web/src/raw.ts. */
 object FramePacket {
-    const val HEADER_BYTES = 256
+    const val HEADER_BYTES = 768
     const val MATCHED_RESULT = 1
     const val DYNAMIC_BLACK = 2
     const val DYNAMIC_WHITE = 4
@@ -38,14 +38,15 @@ object FramePacket {
         received: Int,
         droppedBusy: Int,
         droppedMetadata: Int,
+        shading: FloatArray = floatArrayOf(),
     ): ByteArray {
-        val out = ByteArray(HEADER_BYTES + payload.size)
+        val out = ByteArray(HEADER_BYTES + payload.size + shading.size * 4)
         val b = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
         b.put('N'.code.toByte())
         b.put('R'.code.toByte())
         b.put('A'.code.toByte())
         b.put('W'.code.toByte())
-        b.putShort(2)
+        b.putShort(4)
         b.putShort(HEADER_BYTES.toShort())
         b.putInt(ImageFormat.RAW_SENSOR)
         b.putInt(width)
@@ -79,6 +80,7 @@ object FramePacket {
         b.putInt(droppedMetadata)
         b.position(HEADER_BYTES)
         b.put(payload)
+        for (gain in shading) b.putFloat(gain)
         return out
     }
 }

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.json && vite build",
-    "test": "node --experimental-strip-types --test test/frame.test.ts"
+    "test": "node --experimental-strip-types --test test/frame.test.ts test/motion.test.ts test/isp.test.ts"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

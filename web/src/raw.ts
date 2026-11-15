@@ -5,6 +5,26 @@ export const DYNAMIC_WHITE = 4;
 export const NOISE_PROFILE = 8;
 export const MANUAL_SENSOR = 16;
 
+export interface IspMetadata {
+  flags: number; wb: number[]; matrix: number[]; neutral: number[];
+  mapWidth: number; mapHeight: number; shading: Float32Array; active: number[];
+  maxAnalogIso: number; imageCallbackNs: bigint; resultCallbackNs: bigint;
+  rotationTimestampNs: bigint; rotationQuaternion: number[]; rotationAccuracy: number;
+}
+
+export interface MotionMetadata {
+  flags: number;
+  accuracy: number;
+  timestampNs: bigint;
+  gapNs: bigint;
+  rollingSkewNs: bigint;
+  worldFromDevice: number[]; // Quaternion x,y,z,w.
+  cameraFromDevice: number[];
+  intrinsics: number[]; // fx,fy,cx,cy,skew in half-resolution quad-center coordinates.
+  distortion: number[];
+  exposureTravelRad: number;
+}
+
 export interface RawFrame {
   buffer: ArrayBuffer;
   payload: Uint8Array;
@@ -36,6 +56,8 @@ export interface RawFrame {
   received: number;
   droppedBusy: number;
   droppedMetadata: number;
+  motion: MotionMetadata | null;
+  isp: IspMetadata | null;
 }
 
 export function parseRawFrame(buffer: ArrayBuffer): RawFrame {
@@ -46,12 +68,13 @@ export function parseRawFrame(buffer: ArrayBuffer): RawFrame {
   const le = true;
   const version = d.getUint16(4, le);
   const headerBytes = d.getUint16(6, le);
-  if (version !== 2 || headerBytes !== HEADER_BYTES) throw new Error(`Unsupported NRAW v${version}/${headerBytes}; install the matching APK`);
+  if (!((version === 2 && headerBytes === 256) || (version === 3 && headerBytes === 512) || (version === 4 && headerBytes === 768))) throw new Error(`Unsupported NRAW v${version}/${headerBytes}; install the matching APK`);
   const payloadBytes = d.getUint32(112, le);
-  if (HEADER_BYTES + payloadBytes !== buffer.byteLength) throw new Error('Invalid NRAW payload length');
+  const mapBytes=version===4 && buffer.byteLength>=768 ? d.getUint32(440,le) : 0;
+  if (mapBytes>65536 || mapBytes%16!==0 || headerBytes + payloadBytes + mapBytes !== buffer.byteLength) throw new Error('Invalid NRAW payload length');
   const frame: RawFrame = {
     buffer,
-    payload: new Uint8Array(buffer, HEADER_BYTES, payloadBytes),
+    payload: new Uint8Array(buffer, headerBytes, payloadBytes),
     format: d.getUint32(8, le),
     width: d.getUint32(12, le),
     height: d.getUint32(16, le),
@@ -80,6 +103,23 @@ export function parseRawFrame(buffer: ArrayBuffer): RawFrame {
     received: d.getUint32(208, le),
     droppedBusy: d.getUint32(212, le),
     droppedMetadata: d.getUint32(216, le),
+    motion: version >= 3 ? {
+      flags: d.getUint32(256, le), accuracy: d.getUint32(260, le),
+      timestampNs: d.getBigUint64(264, le), gapNs: d.getBigUint64(272, le), rollingSkewNs: d.getBigUint64(280, le),
+      worldFromDevice: Array.from({length:4}, (_,i) => d.getFloat32(288+i*4,le)),
+      cameraFromDevice: Array.from({length:4}, (_,i) => d.getFloat32(304+i*4,le)),
+      intrinsics: Array.from({length:5}, (_,i) => d.getFloat32(320+i*4,le)),
+      distortion: Array.from({length:5}, (_,i) => d.getFloat32(340+i*4,le)),
+      exposureTravelRad: d.getFloat32(360,le),
+    } : null,
+    isp: version===4 ? {
+      flags:d.getUint32(364,le),wb:Array.from({length:4},(_,i)=>d.getFloat32(368+i*4,le)),
+      matrix:Array.from({length:9},(_,i)=>d.getFloat32(384+i*4,le)),neutral:Array.from({length:3},(_,i)=>d.getFloat32(420+i*4,le)),
+      mapWidth:d.getUint32(432,le),mapHeight:d.getUint32(436,le),shading:new Float32Array(buffer,headerBytes+payloadBytes,mapBytes/4),
+      active:Array.from({length:4},(_,i)=>d.getFloat32(444+i*4,le)),maxAnalogIso:d.getUint32(464,le),
+      imageCallbackNs:d.getBigUint64(468,le),resultCallbackNs:d.getBigUint64(476,le),rotationTimestampNs:d.getBigUint64(484,le),
+      rotationQuaternion:Array.from({length:4},(_,i)=>d.getFloat32(492+i*4,le)),rotationAccuracy:d.getUint32(508,le),
+    } : null,
   };
   if (frame.format !== 32 || frame.width < 2 || frame.height < 2 || ((frame.width | frame.height | frame.cropX | frame.cropY) & 1) !== 0) {
     throw new Error('Expected an even-aligned RAW_SENSOR Bayer crop');
@@ -96,6 +136,13 @@ export function parseRawFrame(buffer: ArrayBuffer): RawFrame {
   }
   if ((frame.flags & NOISE_PROFILE) && frame.noiseProfile.some(pair => pair.some(v => !Number.isFinite(v) || v < 0))) {
     throw new Error('Invalid sensor noise profile');
+  }
+  if(frame.isp) {
+    const s=frame.isp;
+    if((s.flags&1) && s.wb.some(v=>!Number.isFinite(v)||v<=0||v>64))throw new Error('Invalid ISP white balance');
+    if((s.flags&2) && s.matrix.some(v=>!Number.isFinite(v)||Math.abs(v)>64))throw new Error('Invalid ISP matrix');
+    if(mapBytes && (s.mapWidth<2||s.mapHeight<2||s.mapWidth>64||s.mapHeight>64||mapBytes!==s.mapWidth*s.mapHeight*16||s.shading.some(v=>!Number.isFinite(v)||v<1||v>64)))throw new Error('Invalid lens shading map');
+    if((s.flags&4) && (!mapBytes||s.active.some(v=>!Number.isFinite(v))||s.active[2]<=1||s.active[3]<=1))throw new Error('Invalid shading geometry');
   }
   return frame;
 }

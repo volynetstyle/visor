@@ -48,7 +48,7 @@ class NativeBridge(
                         check(WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)) {
                             "Android System WebView does not support binary RAW transport"
                         }
-                        camera.start(cmd.optLong("exposureNs", 250_000_000L), cmd.optInt("iso", 800))
+                        camera.start(cmd.optLong("exposureNs", 250_000_000L), cmd.optInt("iso", 800), cmd.optBoolean("rotationHistory", false))
                     }
                     "stop" -> camera.stop()
                     "ack" -> frameInFlight.compareAndSet(cmd.optInt("frameId"), 0)

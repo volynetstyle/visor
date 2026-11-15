@@ -64,5 +64,5 @@ export async function runGpuTests() {
     near(r.means, Array(108).fill(1));
     results.push('non-workgroup-aligned image boundaries and readback row strides');
     return { passed: results, failures: 0 };
-  } finally { canvas.remove(); }
+  } finally { gpu.destroy(); canvas.remove(); }
 }

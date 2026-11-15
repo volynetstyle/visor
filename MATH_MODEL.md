@@ -2,9 +2,13 @@
 
 **Status:** mathematical design and verification checklist, not benchmark measurements. Target: static RAW Bayer on Android Camera2, TS/WebGPU processing, later reprojection. Numeric noise values below are *illustrative*, not Redmi measurements.
 
-**Implementation (2026-11-14):** the static core now preserves signed black-corrected DN, matches actual capture results by timestamp, keeps independent R/G1/G2/B mean/M2/count statistics, rejects saturated quads, reserves bridge capacity before RAW copying, and ACKs after GPU queue completion. The default requested exposure is 250 ms at ISO 800 with a 32-second window. JSON reports support dark/flat-field measurements. Calibrated inverse-variance weighting, dark-current/hot-pixel correction, full demosaicing and motion/sky reprojection remain future work. See [README.md](README.md) for device experiments and regression checks.
+**Initial static implementation (2026-11-14):** the core preserves signed black-corrected DN, matches actual capture results by timestamp, keeps independent R/G1/G2/B mean/M2/count statistics, rejects saturated quads, reserves bridge capacity before RAW copying, and ACKs after GPU queue completion. The default requested exposure is 250 ms at ISO 800 with a 32-second window. Later motion and ISP/calibration additions are documented below; calibrated inverse-variance weighting, full demosaicing and general motion/sky reconstruction remain future work. See [README.md](README.md) for device experiments and regression checks.
+
+**Experimental rotation update:** rotation-only RGB history and validity gating are now implemented separately from this static CFA estimator. Assumptions, approximate evidence semantics, regression checks and device limitations are documented in [MOTION_MODEL.md](MOTION_MODEL.md). General motion, sky alignment and persistent world reconstruction remain future work.
 
 ## 1. Measurement model
+
+**ISP/calibration update:** [ISP_CALIBRATION.md](ISP_CALIBRATION.md) documents implemented residual dark/FPN correction, defect masking, per-photosite lens shading, reported camera color and display processing. The historical static model below remains the reference for acquisition noise; calibration drift and uncertainty are separate from temporal M2.
 
 For CFA photosite `p`, captured frame `k`:
 

@@ -25,6 +25,7 @@ class RawCamera(
     private val onEvent: (JSONObject) -> Unit,
 ) {
     private val manager = context.getSystemService(CameraManager::class.java)
+    private val motion = MotionTracker(context)
     private val thread = HandlerThread("nightfield-camera").apply { start() }
     private val handler = Handler(thread.looper)
 
@@ -37,8 +38,10 @@ class RawCamera(
     private val frameId = AtomicInteger(0)
     private var generation = 0
     private var active = false
-    private val results = LinkedHashMap<Long, TotalCaptureResult>()
-    private data class PendingImage(val image: Image, val id: Int, val intervalNs: Long)
+    private var motionRequested = false
+    private data class FrameResult(val result: TotalCaptureResult, val callbackNs: Long)
+    private val results = LinkedHashMap<Long, FrameResult>()
+    private data class PendingImage(val image: Image, val id: Int, val intervalNs: Long, val callbackNs: Long, val rotation: Triple<Long,FloatArray,Int>?)
     private var pending: PendingImage? = null
     private var pendingTimeout: Runnable? = null
     private var lastTimestamp = 0L
@@ -64,6 +67,8 @@ class RawCamera(
             for (y in 0..2) rows.put(JSONArray().also { row -> for (x in 0..2) row.put(jsonValue(value.getElement(x, y))) })
         }
         is android.hardware.camera2.params.RggbChannelVector -> JSONArray().put(value.red).put(value.greenEven).put(value.greenOdd).put(value.blue)
+        is android.hardware.camera2.params.LensShadingMap -> JSONObject().put("columns",value.columnCount).put("rows",value.rowCount)
+            .put("gains",JSONArray((0 until value.rowCount*value.columnCount*4).map { n -> value.getGainFactor(n%4,(n/4)%value.columnCount,n/(4*value.columnCount)) }))
         is StreamConfigurationMap -> {
             val formats = JSONArray()
             for (format in value.outputFormats) {
@@ -126,6 +131,7 @@ class RawCamera(
                     }
                 }
                 onEvent(JSONObject().put("type", "cameraInfo").put("androidApi", Build.VERSION.SDK_INT)
+                    .put("motionSensors", motion.capabilities())
                     .put("selectedCameraId", selected?.id ?: JSONObject.NULL).put("cameras", cameras)
                     .put("latestCaptureResult", capture ?: JSONObject.NULL))
             } catch (t: Exception) {
@@ -185,7 +191,7 @@ class RawCamera(
 
         if (preferred?.id != selected?.id) lastResult = null
         selected = preferred
-        val root = JSONObject().put("type", "capabilities").put("cameras", cameras)
+        val root = JSONObject().put("type", "capabilities").put("cameras", cameras).put("motion", motion.capabilities())
         if (preferred != null) root.put("selected", infoJson(preferred))
         else root.put("error", "No back camera advertises REQUEST_AVAILABLE_CAPABILITIES_RAW")
         return root
@@ -253,14 +259,15 @@ class RawCamera(
         .put("minFrameDurationNs", i.minFrameDuration)
         .put("stallDurationNs", i.stallDuration)
         .put("timestampSource", i.chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE))
+        .put("maxAnalogIso", i.chars.get(CameraCharacteristics.SENSOR_MAX_ANALOG_SENSITIVITY) ?: JSONObject.NULL)
 
     @SuppressLint("MissingPermission")
-    fun start(requestExposureNs: Long, requestIso: Int) {
-        handler.post { startOnCameraThread(requestExposureNs, requestIso) }
+    fun start(requestExposureNs: Long, requestIso: Int, rotationHistory: Boolean = false) {
+        handler.post { startOnCameraThread(requestExposureNs, requestIso, rotationHistory) }
     }
 
     @SuppressLint("MissingPermission")
-    private fun startOnCameraThread(requestExposureNs: Long, requestIso: Int) {
+    private fun startOnCameraThread(requestExposureNs: Long, requestIso: Int, rotationHistory: Boolean) {
         stopOnCameraThread()
         val info = selected ?: run {
             onEvent(JSONObject().put("type", "error").put("message", "No RAW camera selected"))
@@ -278,6 +285,8 @@ class RawCamera(
         lastTimestamp = 0L
         lastResult = null
         active = true
+        motionRequested = rotationHistory
+        motion.start() // Also record callback-time rotation samples for offline timebase diagnostics.
         val token = generation
 
         try { manager.openCamera(info.id, object : CameraDevice.StateCallback() {
@@ -319,7 +328,7 @@ class RawCamera(
             val interval = if (lastTimestamp == 0L) 0L else image.timestamp - lastTimestamp
             lastTimestamp = image.timestamp
             discardPending()
-            pending = PendingImage(image, frameId.incrementAndGet(), interval)
+            pending = PendingImage(image, frameId.incrementAndGet(), interval, SystemClock.elapsedRealtimeNanos(), motion.latest())
             if (!deliverMatched(info)) {
                 val waiting = pending
                 val timeout = Runnable {
@@ -340,6 +349,12 @@ class RawCamera(
                         val template = if (info.manual) CameraDevice.TEMPLATE_MANUAL else CameraDevice.TEMPLATE_PREVIEW
                         val b = camera.createCaptureRequest(template)
                         b.addTarget(imageReader.surface)
+                        if (info.chars.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)?.contains(CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON) == true) {
+                            b.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+                            val modes=info.chars.get(CameraCharacteristics.SHADING_AVAILABLE_MODES) ?: intArrayOf()
+                            if (modes.contains(CameraMetadata.SHADING_MODE_HIGH_QUALITY)) b.set(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_HIGH_QUALITY)
+                            else if (modes.contains(CameraMetadata.SHADING_MODE_FAST)) b.set(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_FAST)
+                        }
                         if (info.manual) {
                             b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
                             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
@@ -351,6 +366,11 @@ class RawCamera(
                             b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
                             b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
                             b.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(exposureNs, info.minFrameDuration))
+                            if (info.chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+                                    ?.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF) == true) {
+                                b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
+                            }
+                            b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                             val minFocus = info.chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
                             if (minFocus > 0f) b.set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
                         }
@@ -359,7 +379,7 @@ class RawCamera(
                                 if (token != generation) return
                                 lastResult = result
                                 val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
-                                results[timestamp] = result
+                                results[timestamp] = FrameResult(result, SystemClock.elapsedRealtimeNanos())
                                 while (results.size > 16) results.remove(results.keys.first())
                                 deliverMatched(info)
                             }
@@ -397,7 +417,8 @@ class RawCamera(
 
     private fun deliverMatched(info: CameraInfo): Boolean {
         val item = pending ?: return false
-        val result = results.remove(item.image.timestamp) ?: return false
+        val matched = results.remove(item.image.timestamp) ?: return false
+        val result = matched.result
         pending = null
         pendingTimeout?.let { handler.removeCallbacks(it) }
         pendingTimeout = null
@@ -409,7 +430,7 @@ class RawCamera(
                 if (droppedMetadata == 1) onEvent(JSONObject().put("type", "log").put("message", "Dropping RAW without actual exposure/ISO metadata"))
                 return true
             }
-            if (!onPacket(item.id) { copyCrop(item, info, result, actualExposure, actualIso) }) droppedBusy++
+            if (!onPacket(item.id) { copyCrop(item, info, result, actualExposure, actualIso, matched.callbackNs) }) droppedBusy++
         } catch (t: Exception) {
             onEvent(JSONObject().put("type", "error").put("message", "RAW copy failed: ${t.message}"))
         } finally {
@@ -418,7 +439,7 @@ class RawCamera(
         return true
     }
 
-    private fun copyCrop(item: PendingImage, info: CameraInfo, result: TotalCaptureResult, actualExposure: Long, actualIso: Int): ByteArray {
+    private fun copyCrop(item: PendingImage, info: CameraInfo, result: TotalCaptureResult, actualExposure: Long, actualIso: Int, resultCallbackNs: Long): ByteArray {
         val copyStart = SystemClock.elapsedRealtimeNanos()
         val image = item.image
         val plane = image.planes[0]
@@ -460,6 +481,10 @@ class RawCamera(
         if (dynamicBlack != null) flags = flags or FramePacket.DYNAMIC_BLACK
         if (dynamicWhite != null) flags = flags or FramePacket.DYNAMIC_WHITE
         if (noise != null) flags = flags or FramePacket.NOISE_PROFILE
+        val map=result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+        val gains=map?.takeIf { it.columnCount in 2..64 && it.rowCount in 2..64 }?.let { m ->
+            FloatArray(m.columnCount*m.rowCount*4) { n -> m.getGainFactor(n%4,(n/4)%m.columnCount,n/(4*m.columnCount)) }
+        }?.takeIf { a -> a.all { it.isFinite() && it>=1f && it<=64f } } ?: floatArrayOf()
         val packet = FramePacket.encodeRaw16(
             payload = payload,
             width = w,
@@ -485,9 +510,104 @@ class RawCamera(
             received = received,
             droppedBusy = droppedBusy,
             droppedMetadata = droppedMetadata,
+            shading = gains,
         )
         ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN).putLong(200, SystemClock.elapsedRealtimeNanos() - copyStart)
+        writeMotion(packet, info, result, image.timestamp, actualExposure)
+        writeIsp(packet, info, result, gains, map?.columnCount ?: 0, map?.rowCount ?: 0, item.callbackNs, resultCallbackNs, item.rotation)
         return packet
+    }
+
+    private fun writeIsp(packet: ByteArray, info: CameraInfo, result: TotalCaptureResult, shading: FloatArray, cols: Int, rows: Int, imageCallbackNs: Long, resultCallbackNs: Long, rotation: Triple<Long,FloatArray,Int>?) {
+        val b=ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
+        var flags=0
+        val neutral=result.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)?.map { it.toFloat() }
+        val reported=result.get(CaptureResult.COLOR_CORRECTION_GAINS)
+        val wb=reported?.let { floatArrayOf(it.red,it.greenEven,it.greenOdd,it.blue) }
+            ?: neutral?.takeIf { it.size==3 && it.all { v -> v.isFinite() && v>0 } }?.let { floatArrayOf(it[1]/it[0],1f,1f,it[1]/it[2]) }
+        if (wb!=null && wb.all { it.isFinite() && it>0 && it<=64 }) {
+            flags=flags or 1
+            for (i in 0..3) b.putFloat(368+i*4,wb[i])
+        }
+        val matrix=result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
+        if (matrix!=null) {
+            val values=FloatArray(9) { matrix.getElement(it%3,it/3).toFloat() }
+            if (values.all { it.isFinite() && kotlin.math.abs(it)<=64 }) {
+                flags=flags or 2
+                for (i in values.indices) b.putFloat(384+i*4,values[i])
+            }
+        }
+        if (neutral?.size==3) for (i in 0..2) b.putFloat(420+i*4,neutral[i])
+        val active=info.chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val full=info.chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+        val pre=info.chars.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
+        var origin: Pair<Int,Int>?=null
+        if (active!=null) {
+            if (info.rawSize==full) origin=Pair(active.left,active.top)
+            else if (info.rawSize.width==active.width() && info.rawSize.height==active.height()) origin=Pair(0,0)
+            else if (pre!=null && info.rawSize.width==pre.width() && info.rawSize.height==pre.height()) origin=Pair(active.left-pre.left,active.top-pre.top)
+        }
+        if (shading.isNotEmpty() && active!=null && origin!=null) {
+            flags=flags or 4
+            b.putFloat(444,origin.first.toFloat());b.putFloat(448,origin.second.toFloat())
+            b.putFloat(452,active.width().toFloat());b.putFloat(456,active.height().toFloat())
+        }
+        b.putInt(364,flags);b.putInt(432,if(shading.isNotEmpty())cols else 0);b.putInt(436,if(shading.isNotEmpty())rows else 0)
+        b.putInt(440,shading.size*4)
+        b.putInt(460,if(info.chars.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED)==true)1 else 0)
+        b.putInt(464,info.chars.get(CameraCharacteristics.SENSOR_MAX_ANALOG_SENSITIVITY) ?: 0)
+        b.putLong(468,imageCallbackNs);b.putLong(476,resultCallbackNs)
+        rotation?.let { (time,q,accuracy) ->
+            b.putLong(484,time); for(i in 0..3)b.putFloat(492+i*4,q[i]);b.putInt(508,accuracy)
+        }
+    }
+
+    private fun writeMotion(packet: ByteArray, info: CameraInfo, result: TotalCaptureResult, timestamp: Long, exposure: Long) {
+        val b = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
+        var flags = 0
+        val realtime = info.chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+        if (realtime) flags = flags or 1
+        val skew = result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: -1L
+        val midpoint = timestamp + exposure/2 + maxOf(0L, skew)/2
+        b.putLong(264, midpoint)
+        b.putLong(280, maxOf(0L, skew))
+        if (motionRequested && realtime && skew >= 0) {
+            val pose = motion.sample(timestamp, midpoint, timestamp + exposure + skew)
+            if (pose != null) {
+                flags = flags or 2 or 16
+                b.putInt(260, pose.accuracy)
+                b.putLong(272, pose.gapNs)
+                for (i in 0..3) b.putFloat(288+i*4, pose.q[i])
+                b.putFloat(360, pose.travel)
+            }
+        }
+        val intrinsic = result.get(CaptureResult.LENS_INTRINSIC_CALIBRATION)
+            ?: info.chars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+        val pre = info.chars.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
+        val full = info.chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+        // Only known RAW array layouts; never infer binning/crop scales from image dimensions.
+        val fullRaw = full != null && info.rawSize == full
+        val activeRaw = pre != null && info.rawSize.width == pre.width() && info.rawSize.height == pre.height()
+        if (intrinsic != null && intrinsic.size == 5 && intrinsic.all { it.isFinite() } && intrinsic[0] > 0 && intrinsic[1] > 0 && pre != null && (fullRaw || activeRaw)) {
+            val k = intrinsic.copyOf()
+            k[0] /= 2f; k[1] /= 2f; k[4] /= 2f
+            k[2] = (intrinsic[2] + (if (fullRaw) pre.left else 0) - info.cropX - 1f)/2f
+            k[3] = (intrinsic[3] + (if (fullRaw) pre.top else 0) - info.cropY - 1f)/2f
+            for (i in 0..4) b.putFloat(320+i*4, k[i])
+            flags = flags or 4
+        }
+        val poseRotation = result.get(CaptureResult.LENS_POSE_ROTATION) ?: info.chars.get(CameraCharacteristics.LENS_POSE_ROTATION)
+        val reference = if (Build.VERSION.SDK_INT >= 28) info.chars.get(CameraCharacteristics.LENS_POSE_REFERENCE) else null
+        if (poseRotation != null && poseRotation.size == 4 && poseRotation.all { it.isFinite() } && reference != null && reference != CameraMetadata.LENS_POSE_REFERENCE_UNDEFINED) {
+            for (i in 0..3) b.putFloat(304+i*4, poseRotation[i])
+            flags = flags or 8
+        }
+        val distortion = if (Build.VERSION.SDK_INT >= 28) result.get(CaptureResult.LENS_DISTORTION) ?: info.chars.get(CameraCharacteristics.LENS_DISTORTION) else null
+        if (distortion != null && distortion.size == 5 && distortion.all { it.isFinite() }) {
+            for (i in 0..4) b.putFloat(340+i*4, distortion[i])
+            flags = flags or 32
+        }
+        b.putInt(256, flags)
     }
 
     fun stop() {
@@ -498,6 +618,7 @@ class RawCamera(
         generation++
         val wasActive = active
         active = false
+        motion.stop()
         discardPending()
         results.clear()
         try { session?.stopRepeating() } catch (_: Throwable) {}
@@ -514,6 +635,7 @@ class RawCamera(
     fun close() {
         handler.post {
             stopOnCameraThread()
+            motion.close()
             thread.quitSafely()
         }
     }
