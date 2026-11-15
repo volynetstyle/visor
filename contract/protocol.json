@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "limits": {
+    "maxPending": 16,
+    "maxMessageBytes": 4096,
+    "requestTimeoutMs": 30000
+  },
+  "notifications": [
+    "camera.focus",
+    "camera.zoomBy"
+  ],
+  "envelope": {
+    "session": "opaque",
+    "sequence": "monotonic",
+    "requestId": "rN",
+    "encoding": "json-utf8"
+  },
+  "delivery": {
+    "observations": "latest-only",
+    "replies": "reliable-bounded"
+  }
+}

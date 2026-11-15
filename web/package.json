@@ -1,5 +1,0 @@
-{
-  "name": "visor-web-tools",
-  "private": true,
-  "devDependencies": { "esbuild": "0.28.2" }
-}

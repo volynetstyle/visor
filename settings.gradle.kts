@@ -15,4 +15,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "PureCamera"
-include(":app")
+include(":android")
+project(":android").projectDir = file("platforms/android")

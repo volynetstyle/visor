@@ -1,11 +1,12 @@
 /.pixi/
 /.gradle/
 /.gradle-user-home/
-/app/build/
 /build/
 /local.properties
-/web/node_modules/
-/web/build/
 /.npm-cache/
 /.android-sdk/
 /.kotlin/
+
+/platforms/android/build/
+/hud/build/
+/tools/node_modules/

@@ -1,4 +1,2 @@
-web/build/
-web/www/contract.js
-packages/visor-contract/bindings/
-app/src/main/java/io/volynetstyle/visor/contract/
+hud/build/
+contract/generated/
