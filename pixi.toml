@@ -9,3 +9,16 @@ openjdk = "21.*"
 [tasks]
 build = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1"
 test = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1"
+
+[feature.web-check.dependencies]
+nodejs = "22.*"
+
+[feature.web-check.tasks]
+web-install = { cmd = "npm ci", cwd = "web" }
+contract-generate = "node scripts/generate-contract.cjs"
+replay = { cmd = "node web/replay/serve.cjs", depends-on = ["web-check"] }
+web-check = "node scripts/generate-contract.cjs --check && node web/build.cjs && node scripts/test-web.cjs"
+
+[environments]
+default = { features = [], solve-group = "default" }
+web-check = { features = ["web-check"], solve-group = "default" }

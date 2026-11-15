@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("build", "test")]
+    [ValidateSet("build", "test", "replay")]
     [string] $Task = "build"
 )
 $ErrorActionPreference = "Stop"
@@ -13,6 +13,7 @@ $env:PIXI_HOME = Join-Path $pixiRoot "home"
 $env:PIXI_CACHE_DIR = Join-Path $pixiRoot "cache"
 Push-Location $root
 try {
-    & $pixi run $Task
+    if ($Task -eq "replay") { & $pixi run --locked --environment web-check replay }
+    else { & $pixi run $Task }
     if ($LASTEXITCODE -ne 0) { throw "Pixi task '$Task' failed ($LASTEXITCODE)" }
 } finally { Pop-Location }

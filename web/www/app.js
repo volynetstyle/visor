@@ -1,100 +1,209 @@
 (() => {
   "use strict";
 
-  const byId = id => document.getElementById(id);
+  // Performance contract: web/PERFORMANCE.md. One on-demand frame, no camera data.
   const elements = {};
   for (const id of ["viewfinder", "focus", "message", "recording", "timer", "flash", "zoom", "photo", "video", "shutter", "switch", "gallery"]) {
-    elements[id] = byId(id);
+    elements[id] = document.getElementById(id);
   }
+  const rootStyle = document.documentElement.style;
+  const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const previous = {};
+  let latestState = null;
+  let frame = 0;
   let cameraReady = false;
-  let focusTimer;
+  let visible = !document.hidden;
+  let viewportWidth = window.innerWidth;
+  let viewportHeight = window.innerHeight;
+  let pendingZoom = 1;
+  let pendingFocus = null;
+  let focusAnimation = null;
+  let gesture = false;
+  let pinching = false;
+  let startX = 0;
+  let startY = 0;
+  let lastDistance = 0;
+  let runtime;
 
-  const send = command => {
-    if (window.Native) window.Native.action(command);
-  };
-  for (const [id, command] of [
+  function schedule() {
+    if (visible && !frame) frame = requestAnimationFrame(flush);
+  }
+
+  function applyState(state) {
+    if (previous.mode !== state.mode) {
+      const photo = state.mode === "photo";
+      elements.photo.classList.toggle("selected", photo);
+      elements.video.classList.toggle("selected", !photo);
+      elements.photo.setAttribute("aria-pressed", String(photo));
+      elements.video.setAttribute("aria-pressed", String(!photo));
+      elements.shutter.classList.toggle("video", !photo);
+    }
+    if (previous.mode !== state.mode || previous.recording !== state.recording) {
+      elements.shutter.setAttribute("aria-label", state.recording ? "Остановить запись видео" :
+        state.mode === "photo" ? "Сделать снимок" : "Начать запись видео");
+    }
+    if (previous.selectionEnabled !== state.selectionEnabled) {
+      elements.photo.disabled = !state.selectionEnabled;
+      elements.video.disabled = !state.selectionEnabled;
+    }
+    if (previous.shutterEnabled !== state.shutterEnabled) elements.shutter.disabled = !state.shutterEnabled;
+    if (previous.switchEnabled !== state.switchEnabled) elements.switch.disabled = !state.switchEnabled;
+    if (previous.flashEnabled !== state.flashEnabled) elements.flash.disabled = !state.flashEnabled;
+    if (previous.flash !== state.flash) elements.flash.textContent = state.flash;
+    if (previous.zoom !== state.zoom) {
+      elements.zoom.textContent = state.zoom;
+      elements.zoom.setAttribute("aria-label", "Приближение: " + state.zoom);
+    }
+    if (previous.recording !== state.recording) {
+      elements.shutter.classList.toggle("recording", state.recording);
+      elements.recording.hidden = !state.recording;
+    }
+    if (previous.duration !== state.duration) elements.timer.textContent = state.duration;
+    if (previous.message !== state.message) {
+      elements.message.hidden = !state.message;
+      elements.message.textContent = state.message;
+    }
+    if (previous.messageEnabled !== state.messageEnabled) elements.message.disabled = !state.messageEnabled;
+    for (const edge of ["top", "bottom", "left", "right"]) {
+      const value = state.insets[edge];
+      if (previous[edge] !== value) {
+        rootStyle.setProperty("--" + edge, value + "px");
+        previous[edge] = value;
+      }
+    }
+    for (const key of ["mode", "recording", "selectionEnabled", "shutterEnabled", "switchEnabled",
+      "flashEnabled", "flash", "zoom", "duration", "message", "messageEnabled"]) {
+      previous[key] = state[key];
+    }
+  }
+
+  function showFocus(point) {
+    if (focusAnimation) focusAnimation.cancel();
+    const position = "translate3d(" + point.x + "px," + point.y + "px,0) translate(-50%,-50%)";
+    const settled = position + " scale(1)";
+    focusAnimation = elements.focus.animate([
+      { opacity: .9, transform: position + (motion.matches ? " scale(1)" : " scale(1.15)") },
+      { offset: .18, opacity: .9, transform: settled },
+      { offset: .8, opacity: .9, transform: settled },
+      { opacity: 0, transform: settled }
+    ], { duration: 1000, easing: "ease-out" });
+  }
+
+  function flush() {
+    frame = 0;
+    if (!visible) return;
+    if (latestState) {
+      const state = latestState;
+      latestState = null;
+      applyState(state);
+    }
+    const zoom = pendingZoom;
+    const focus = pendingFocus;
+    pendingZoom = 1;
+    pendingFocus = null;
+    if (cameraReady) {
+      if (zoom !== 1) runtime.zoomBy({ factor: zoom });
+      if (focus) {
+        runtime.focus({ x: focus.x / viewportWidth, y: focus.y / viewportHeight });
+        showFocus(focus);
+      }
+    }
+  }
+
+  window.PureCamera = Object.freeze({
+    render(state) {
+      cameraReady = state.ready;
+      latestState = state;
+      if (!cameraReady) resetGesture();
+      schedule();
+    }
+  });
+
+  function resetGesture() {
+    gesture = false;
+    pinching = false;
+    lastDistance = 0;
+    pendingZoom = 1;
+    pendingFocus = null;
+  }
+
+  for (const binding of [
     ["message", "permission"], ["photo", "photo"], ["video", "video"], ["shutter", "shutter"],
     ["switch", "switch"], ["flash", "flash"], ["gallery", "gallery"]
   ]) {
-    elements[id].addEventListener("click", () => send(command));
+    const id = binding[0], command = binding[1];
+    elements[id].addEventListener("click", () => {
+      if (visible) runtime.intent(command);
+    });
   }
 
-  window.PureCamera = {
-    render(state) {
-      cameraReady = state.ready;
-      elements.photo.classList.toggle("selected", state.mode === "photo");
-      elements.video.classList.toggle("selected", state.mode === "video");
-      elements.photo.setAttribute("aria-pressed", String(state.mode === "photo"));
-      elements.video.setAttribute("aria-pressed", String(state.mode === "video"));
-      elements.photo.disabled = !state.selectionEnabled;
-      elements.video.disabled = !state.selectionEnabled;
-      elements.shutter.disabled = !state.shutterEnabled;
-      elements.shutter.classList.toggle("video", state.mode === "video");
-      elements.shutter.classList.toggle("recording", state.recording);
-      elements.shutter.setAttribute("aria-label", state.recording ? "Остановить запись видео" :
-        state.mode === "photo" ? "Сделать снимок" : "Начать запись видео");
-      elements.switch.disabled = !state.switchEnabled;
-      elements.flash.disabled = !state.flashEnabled;
-      elements.flash.textContent = state.flash;
-      elements.zoom.textContent = state.zoom;
-      elements.zoom.setAttribute("aria-label", "Приближение: " + state.zoom);
-      elements.recording.hidden = !state.recording;
-      elements.timer.textContent = state.duration;
-      elements.message.hidden = !state.message;
-      elements.message.textContent = state.message;
-      elements.message.disabled = !state.messageEnabled;
-      for (const edge of ["top", "bottom", "left", "right"]) {
-        document.documentElement.style.setProperty("--" + edge, state.insets[edge] + "px");
-      }
-    }
-  };
-
-  let startPoint = null;
-  let lastDistance = 0;
-  let pinching = false;
   const distance = touches => Math.hypot(
     touches[0].clientX - touches[1].clientX,
     touches[0].clientY - touches[1].clientY
   );
-
   elements.viewfinder.addEventListener("touchstart", event => {
-    if (!cameraReady || event.target.closest("button")) return;
+    if (!visible || !cameraReady || event.target.closest("button")) return;
     if (event.touches.length === 1) {
-      startPoint = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+      gesture = true;
       pinching = false;
+      startX = event.touches[0].clientX;
+      startY = event.touches[0].clientY;
+      lastDistance = 0;
     } else if (event.touches.length === 2) {
+      gesture = true;
       pinching = true;
+      pendingFocus = null;
       lastDistance = distance(event.touches);
+    } else {
+      resetGesture();
     }
   }, { passive: true });
 
   elements.viewfinder.addEventListener("touchmove", event => {
-    if (!cameraReady || !startPoint) return;
-    if (event.touches.length === 2) {
-      const next = distance(event.touches);
-      if (lastDistance > 0 && window.Native) window.Native.zoom(Math.max(.5, Math.min(2, next / lastDistance)));
-      lastDistance = next;
-      pinching = true;
+    if (!visible || !cameraReady || !gesture || event.touches.length !== 2) return;
+    const next = distance(event.touches);
+    if (lastDistance > 0 && next > 0) {
+      pendingZoom = Math.max(.01, Math.min(100, pendingZoom * next / lastDistance));
+      schedule();
     }
+    lastDistance = next;
+    pinching = true;
   }, { passive: true });
 
   elements.viewfinder.addEventListener("touchend", event => {
-    if (!startPoint || event.touches.length !== 0) return;
-    const end = event.changedTouches[0];
-    const moved = Math.hypot(end.clientX - startPoint.x, end.clientY - startPoint.y);
-    if (!pinching && moved < 15 && cameraReady && window.Native) {
-      window.Native.focus(end.clientX / window.innerWidth, end.clientY / window.innerHeight);
-      elements.focus.style.left = end.clientX + "px";
-      elements.focus.style.top = end.clientY + "px";
-      elements.focus.classList.remove("visible");
-      void elements.focus.offsetWidth;
-      elements.focus.classList.add("visible");
-      clearTimeout(focusTimer);
-      focusTimer = setTimeout(() => elements.focus.classList.remove("visible"), 1000);
+    if (!gesture) return;
+    if (event.touches.length === 1) {
+      lastDistance = 0;
+      return;
     }
-    startPoint = null;
+    if (event.touches.length !== 0) return;
+    const end = event.changedTouches[0];
+    if (!pinching && end && Math.hypot(end.clientX - startX, end.clientY - startY) < 15) {
+      pendingFocus = { x: end.clientX, y: end.clientY };
+      schedule();
+    }
+    gesture = false;
     lastDistance = 0;
   }, { passive: true });
 
-  elements.viewfinder.addEventListener("touchcancel", () => { startPoint = null; lastDistance = 0; });
+  elements.viewfinder.addEventListener("touchcancel", resetGesture, { passive: true });
+  window.addEventListener("resize", () => {
+    viewportWidth = window.innerWidth;
+    viewportHeight = window.innerHeight;
+    resetGesture();
+  }, { passive: true });
+  document.addEventListener("visibilitychange", () => {
+    visible = !document.hidden;
+    resetGesture();
+    if (!visible) {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      if (focusAnimation) focusAnimation.cancel();
+      focusAnimation = null;
+    } else if (latestState) {
+      schedule();
+    }
+  });
+  runtime = window.Visor.createRuntime(window.Visor.createBackend(window.VisorTransport, window.VisorBackendOptions), window.PureCamera.render);
+  window.addEventListener("pagehide", () => runtime.dispose(), { once: true });
 })();

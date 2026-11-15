@@ -14,7 +14,7 @@ android {
         versionName = "1.0.0"
     }
 
-    sourceSets.getByName("main").assets.directories.add("../web/www")
+    sourceSets.getByName("main").assets.directories.add("../web/build")
 }
 
 dependencies {
@@ -27,3 +27,15 @@ dependencies {
     implementation("androidx.webkit:webkit:1.18.0")
     testImplementation("junit:junit:4.13.2")
 }
+
+// Every Android entry point (including Android Studio) verifies the UI contract.
+val checkWebPerformance = tasks.register<Exec>("checkWebPerformance") {
+    group = "verification"
+    description = "Check web UI scheduling, bridge and resource budgets"
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", rootProject.file("scripts/web-check.ps1").absolutePath,
+    )
+}
+tasks.named("preBuild") { dependsOn(checkWebPerformance) }

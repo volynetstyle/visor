@@ -1,0 +1,13 @@
+{
+  "totalBytes": 32768,
+  "maxDomElements": 64,
+  "files": {
+    "app.js": 16384,
+    "backend.js": 12288,
+    "contract.js": 4096,
+    "runtime.js": 8192,
+    "platform.js": 2048,
+    "style.css": 12288,
+    "index.html": 8192
+  }
+}

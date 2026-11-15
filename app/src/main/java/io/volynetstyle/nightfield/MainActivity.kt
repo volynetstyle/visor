@@ -49,6 +49,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
+import io.volynetstyle.visor.contract.*
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.text.SimpleDateFormat
@@ -74,6 +75,7 @@ class MainActivity : ComponentActivity() {
     private var recording: Recording? = null
     private var cameraReady = false
     private var hasOtherCamera = false
+    private var focusSupported = false
     private var rebindAfterCapture = false
     private var bindingGeneration = 0
     private var mode = Mode.PHOTO
@@ -81,14 +83,34 @@ class MainActivity : ComponentActivity() {
     private var flashMode = ImageCapture.FLASH_MODE_AUTO
     private var torchOn = false
     private var targetRotation = Surface.ROTATION_0
-    private var zoomLabel = "1×"
-    private var durationLabel = "00:00"
-    private var message = ""
-    private var messageAction = ""
+    private var zoomRatio = 1.0
+    private var durationSeconds = 0L
+    private var cameraFailure: ErrorCode? = null
     private var webReady = false
     private var webDestroyed = false
     private var rendererRestarts = 0
+    private var uiResumed = false
+    private val backendChannel by lazy {
+        AndroidBackendChannel(BackendOutbox(
+            postFrame = { interfaceView.postOnAnimation(it) },
+            cancelFrame = { interfaceView.removeCallbacks(it) },
+            deliver = { message: JSONObject, complete ->
+                interfaceView.evaluateJavascript(
+                    "window.VisorPlatform && window.VisorPlatform.receive(" + message + ")"
+                ) { complete() }
+            },
+        ), onSessionReset = ::resetBackendSession, execute = ::executeBackend)
+    }
+    private var previewRequested = false
+    private var pendingStart: BackendRequest? = null
+    private var pendingAccess: BackendRequest? = null
+    private var activeCapture: BackendRequest? = null
+    private var captureCancelled = false
+    private var pendingStop: BackendRequest? = null
+    private var photoSupport = Support.UNKNOWN
+    private var videoSupport = Support.UNKNOWN
     private var pendingStorageMode: Mode? = null
+    private var audioPermissionPending = false
     private var insetsTop = 0
     private var insetsBottom = 0
     private var insetsLeft = 0
@@ -96,17 +118,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var orientationListener: OrientationEventListener
 
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startCamera() else showCameraPermission()
+        if (granted && previewRequested) startCamera() else if (!granted) showCameraPermission()
+        completeAccessRequest(granted)
     }
     private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val requestedMode = pendingStorageMode
         pendingStorageMode = null
         if (granted && requestedMode == mode) continueCapture()
-        else if (!granted) toast(R.string.storage_permission_needed)
+        else if (!granted) finishCapture(null, "", "PERMISSION_DENIED")
     }
     private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) toast(R.string.video_silent)
-        if (mode == Mode.VIDEO && cameraReady && gate.isReady) startVideo(granted)
+        audioPermissionPending = false
+        if (mode == Mode.VIDEO && cameraReady && gate.isReady && activeCapture != null && !captureCancelled) startVideo(granted)
+        else if (activeCapture != null) finishCapture(null, "", "CANCELLED")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -158,19 +182,30 @@ class MainActivity : ComponentActivity() {
 
         if (!hasPermission(Manifest.permission.CAMERA)) {
             showCameraPermission()
-            if (!preferences.getBoolean("asked_camera", false)) requestCameraPermission()
         }
     }
 
     override fun onResume() {
         super.onResume()
+        interfaceView.onResume()
+        uiResumed = true
+        backendChannel.setActive(webReady)
+        if (pendingAccess != null) completeAccessRequest(hasPermission(Manifest.permission.CAMERA))
         if (hasPermission(Manifest.permission.CAMERA)) {
-            if (provider == null) startCamera()
-            else if (!cameraReady && gate.isReady) bindCamera()
+            if (previewRequested && provider == null) startCamera()
+            else if (previewRequested && !cameraReady && gate.isReady) bindCamera()
         } else {
             cameraReady = false
             showCameraPermission()
         }
+        publishState()
+    }
+
+    override fun onPause() {
+        uiResumed = false
+        backendChannel.setActive(false)
+        if (!webDestroyed) interfaceView.onPause()
+        super.onPause()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -186,6 +221,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        backendChannel.resetDelivery()
+        cancelCurrentCapture()
         orientationListener.disable()
         recording?.close()
         if (!webDestroyed) {
@@ -219,11 +256,13 @@ class MainActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 webReady = true
+                backendChannel.setActive(uiResumed)
                 publishState()
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 webReady = false
+                backendChannel.resetDelivery()
                 (view.parent as? ViewGroup)?.removeView(view)
                 view.removeJavascriptInterface("Native")
                 view.destroy()
@@ -250,35 +289,222 @@ class MainActivity : ComponentActivity() {
 
     inner class InterfaceBridge {
         @JavascriptInterface
-        fun action(command: String) {
+        fun postMessage(message: String) {
+            if (message.length > Protocol.MAX_MESSAGE_BYTES) return
             runOnUiThread {
-                when (command) {
-                    "permission" -> handleMessageAction()
-                    "photo" -> selectMode(Mode.PHOTO)
-                    "video" -> selectMode(Mode.VIDEO)
-                    "shutter" -> onShutter()
-                    "switch" -> switchCamera()
-                    "flash" -> switchFlash()
-                    "gallery" -> openGallery()
-                }
+                if (!isDestroyed) backendChannel.receive(message)
             }
-        }
-
-        @JavascriptInterface
-        fun focus(x: Double, y: Double) {
-            if (!x.isFinite() || !y.isFinite() || x !in 0.0..1.0 || y !in 0.0..1.0) return
-            runOnUiThread { focusAt(x.toFloat(), y.toFloat()) }
-        }
-
-        @JavascriptInterface
-        fun zoom(factor: Double) {
-            if (!factor.isFinite() || factor !in 0.5..2.0) return
-            runOnUiThread { zoomBy(factor.toFloat()) }
         }
     }
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun executeBackend(request: BackendRequest) {
+        val params = request.params
+        if (!uiResumed && request.method !in setOf(VisorMethod.SYSTEM_CONNECT, VisorMethod.CAMERA_STOP, VisorMethod.CAMERA_CANCELCAPTURE)) {
+            backendChannel.error(request, "BUSY")
+            return
+        }
+        when (request.method) {
+            VisorMethod.SYSTEM_CONNECT -> {
+                publishState()
+                backendChannel.result(request, backendSnapshot().toWire())
+                backendChannel.setActive(webReady && uiResumed)
+            }
+            VisorMethod.CAMERA_CAPABILITIES -> backendChannel.result(request, backendSnapshot().toWire().getJSONObject("capabilities"))
+            VisorMethod.SYSTEM_OPENGALLERY -> {
+                if (openGallery()) backendChannel.result(request) else backendChannel.error(request, "UNAVAILABLE")
+            }
+            VisorMethod.SYSTEM_REQUESTCAMERAACCESS -> {
+                if (hasPermission(Manifest.permission.CAMERA)) backendChannel.result(request)
+                else if (pendingAccess != null) backendChannel.error(request, "BUSY")
+                else {
+                    pendingAccess = request
+                    showCameraPermission()
+                    handleMessageAction()
+                }
+            }
+            VisorMethod.CAMERA_START -> {
+                val requestedMode = CameraMode.entries.firstOrNull { it.wire == params.getString("mode") }
+                    ?: throw IllegalArgumentException()
+                val requestedLens = LensFacing.entries.firstOrNull { it.wire == params.getString("lens") }
+                    ?: throw IllegalArgumentException()
+                if (!hasPermission(Manifest.permission.CAMERA)) {
+                    showCameraPermission()
+                    backendChannel.error(request, "PERMISSION_DENIED")
+                } else if (!gate.isReady || activeCapture != null || pendingStart != null) {
+                    backendChannel.error(request, "BUSY")
+                } else {
+                    val nextMode = if (requestedMode == CameraMode.PHOTO) Mode.PHOTO else Mode.VIDEO
+                    val nextLens = if (requestedLens == LensFacing.BACK) CameraSelector.LENS_FACING_BACK else CameraSelector.LENS_FACING_FRONT
+                    previewRequested = true
+                    if (cameraReady && mode == nextMode && lens == nextLens) {
+                        publishState()
+                        backendChannel.result(request)
+                    } else {
+                        if (lens != nextLens) { photoSupport = Support.UNKNOWN; videoSupport = Support.UNKNOWN }
+                        mode = nextMode
+                        lens = nextLens
+                        pendingStart = request
+                        startCamera()
+                    }
+                }
+            }
+            VisorMethod.CAMERA_STOP -> {
+                previewRequested = false
+                bindingGeneration++
+                cameraReady = false
+                cancelCurrentCapture()
+                pendingStart?.let { backendChannel.error(it, "CANCELLED") }
+                pendingStart = null
+                provider?.unbindAll()
+                publishState()
+                backendChannel.result(request)
+            }
+            VisorMethod.CAMERA_TAKEPHOTO, VisorMethod.CAMERA_STARTRECORDING -> {
+                val photo = request.method == VisorMethod.CAMERA_TAKEPHOTO
+                if (!cameraReady || !previewRequested) backendChannel.error(request, "UNAVAILABLE")
+                else if (!gate.isReady || activeCapture != null || pendingStorageMode != null || audioPermissionPending) backendChannel.error(request, "BUSY")
+                else if (photo != (mode == Mode.PHOTO)) backendChannel.error(request, "INVALID_ARGUMENT")
+                else {
+                    activeCapture = request
+                    captureCancelled = false
+                    onShutter()
+                    publishState()
+                }
+            }
+            VisorMethod.CAMERA_STOPRECORDING -> {
+                if (activeCapture?.id != params.getString("captureId")) backendChannel.error(request, "STALE_CAPTURE")
+                else if (gate.state != CaptureGate.State.RECORDING || pendingStop != null) backendChannel.error(request, "BUSY")
+                else { pendingStop = request; onShutter() }
+            }
+            VisorMethod.CAMERA_CANCELCAPTURE -> {
+                if (activeCapture?.id != params.getString("captureId")) backendChannel.error(request, "STALE_CAPTURE")
+                else { cancelCurrentCapture(); publishState(); backendChannel.result(request) }
+            }
+            VisorMethod.CAMERA_SETFLASH -> {
+                val flash = FlashMode.entries.firstOrNull { it.wire == params.getString("mode") }
+                    ?: throw IllegalArgumentException()
+                val torch = params.get("torch") as? Boolean ?: throw IllegalArgumentException()
+                if (!cameraReady) backendChannel.error(request, "UNAVAILABLE")
+                else if (camera?.cameraInfo?.hasFlashUnit() != true) backendChannel.error(request, "UNSUPPORTED")
+                else if (mode == Mode.PHOTO && !gate.isReady) backendChannel.error(request, "BUSY")
+                else {
+                    flashMode = when (flash) {
+                        FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
+                        FlashMode.ON -> ImageCapture.FLASH_MODE_ON
+                        FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
+                    }
+                    imageCapture?.flashMode = flashMode
+                    if (mode == Mode.VIDEO) {
+                        val operation = camera!!.cameraControl.enableTorch(torch)
+                        operation.addListener({
+                            try {
+                                operation.get()
+                                torchOn = torch
+                                publishState()
+                                backendChannel.result(request)
+                            } catch (_: Exception) { backendChannel.error(request, "UNAVAILABLE") }
+                        }, executor)
+                    } else { publishState(); backendChannel.result(request) }
+                }
+            }
+            VisorMethod.CAMERA_FOCUS -> {
+                val x = (params.get("x") as? Number)?.toDouble() ?: throw IllegalArgumentException()
+                val y = (params.get("y") as? Number)?.toDouble() ?: throw IllegalArgumentException()
+                require(x.isFinite() && y.isFinite() && x in 0.0..1.0 && y in 0.0..1.0)
+                if (focusSupported) focusAt(x.toFloat(), y.toFloat())
+            }
+            VisorMethod.CAMERA_ZOOMBY -> {
+                val factor = (params.get("factor") as? Number)?.toDouble() ?: throw IllegalArgumentException()
+                require(factor.isFinite() && factor in 0.01..100.0)
+                zoomBy(factor.toFloat())
+            }
+        }
+    }
+
+    private fun completeAccessRequest(granted: Boolean) {
+        val request = pendingAccess ?: return
+        pendingAccess = null
+        publishState()
+        if (granted) backendChannel.result(request) else backendChannel.error(request, "PERMISSION_DENIED")
+    }
+
+    private fun resetBackendSession() {
+        cancelCurrentCapture()
+        pendingStart = null
+        pendingAccess = null
+    }
+
+    private fun cancelCurrentCapture() {
+        val request = activeCapture ?: return
+        captureCancelled = true
+        backendChannel.error(request, "CANCELLED")
+        backendChannel.capture(request, null, "CANCELLED")
+        pendingStop?.let { backendChannel.error(it, "CANCELLED") }
+        pendingStop = null
+        if (gate.state == CaptureGate.State.RECORDING && gate.stopVideo()) recording?.stop()
+        if (gate.isReady) finishCapture(null, "", "CANCELLED")
+    }
+
+    private fun finishCapture(uri: Uri?, mime: String, failure: String? = null) {
+        val request = activeCapture ?: return
+        val stop = pendingStop
+        val cancelled = captureCancelled
+        activeCapture = null
+        pendingStop = null
+        captureCancelled = false
+        val invalid = uri == null || uri == Uri.EMPTY
+        if (cancelled || failure != null) {
+            if (!invalid) try { contentResolver.delete(uri!!, null, null) } catch (_: Exception) { /* Best effort cleanup. */ }
+        } else if (!invalid) remember(uri, mime)
+        captureFinished()
+        val error = if (cancelled) "CANCELLED" else failure ?: if (invalid) "SAVE_FAILED" else null
+        if (error != null) {
+            backendChannel.error(request, error)
+            stop?.let { backendChannel.error(it, error) }
+            backendChannel.capture(request, null, error)
+        } else {
+            val result = JSONObject().put("captureId", request.id).put("uri", uri.toString()).put("mime", mime)
+            backendChannel.result(request, result)
+            stop?.let { backendChannel.result(it, result) }
+            backendChannel.capture(request, result, null)
+        }
+    }
+
+    private fun backendSnapshot(): CameraState {
+        val zoom = camera?.cameraInfo?.zoomState?.value
+        val phase = when {
+            !previewRequested -> CameraPhase.IDLE
+            captureCancelled -> CameraPhase.CANCELLING
+            gate.state == CaptureGate.State.STOPPING_VIDEO -> CameraPhase.STOPPING
+            gate.state == CaptureGate.State.RECORDING -> CameraPhase.RECORDING
+            activeCapture != null -> CameraPhase.CAPTURING
+            cameraFailure != null -> CameraPhase.FAILED
+            cameraReady -> CameraPhase.LIVE
+            else -> CameraPhase.STARTING
+        }
+        return CameraState(
+            phase, if (mode == Mode.PHOTO) CameraMode.PHOTO else CameraMode.VIDEO,
+            if (lens == CameraSelector.LENS_FACING_BACK) LensFacing.BACK else LensFacing.FRONT,
+            if (previewRequested) activeCapture?.id else null, durationSeconds * 1000.0, zoomRatio,
+            when (flashMode) {
+                ImageCapture.FLASH_MODE_AUTO -> FlashMode.AUTO
+                ImageCapture.FLASH_MODE_ON -> FlashMode.ON
+                else -> FlashMode.OFF
+            }, torchOn, uiResumed,
+            if (hasPermission(Manifest.permission.CAMERA)) CameraAccess.GRANTED
+                else if (preferences.getBoolean("asked_camera", false) &&
+                    !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) CameraAccess.SETTINGS else CameraAccess.PROMPT,
+            if (phase == CameraPhase.FAILED) cameraFailure else null,
+            Capabilities(photoSupport, videoSupport, Support.UNSUPPORTED, Support.UNSUPPORTED,
+                Support.UNSUPPORTED, Support.UNSUPPORTED, camera?.cameraInfo?.hasFlashUnit() == true,
+                hasOtherCamera, focusSupported, zoom?.minZoomRatio?.toDouble() ?: 1.0,
+                zoom?.maxZoomRatio?.toDouble() ?: 1.0),
+            Insets(insetsTop.toDouble(), insetsBottom.toDouble(), insetsLeft.toDouble(), insetsRight.toDouble()),
+        )
+    }
 
     private fun requestCameraPermission() {
         preferences.edit().putBoolean("asked_camera", true).apply()
@@ -286,32 +512,26 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showCameraPermission() {
-        val permanentlyDenied = preferences.getBoolean("asked_camera", false) &&
-            !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
-        message = getString(if (permanentlyDenied) R.string.camera_settings else R.string.camera_permission)
-        messageAction = if (permanentlyDenied) "settings" else "permission"
         publishState()
     }
 
     private fun handleMessageAction() {
-        when (messageAction) {
-            "permission" -> requestCameraPermission()
-            "settings" -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        if (preferences.getBoolean("asked_camera", false) &&
+            !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = Uri.fromParts("package", packageName, null)
             })
-            "retry" -> if (provider == null) startCamera() else bindCamera()
-        }
+        } else requestCameraPermission()
     }
 
     private fun startCamera() {
-        if (!hasPermission(Manifest.permission.CAMERA) || providerStarting) return
+        if (!previewRequested || !hasPermission(Manifest.permission.CAMERA) || providerStarting) return
         if (provider != null) {
             bindCamera()
             return
         }
         providerStarting = true
-        message = getString(R.string.camera_loading)
-        messageAction = ""
+        cameraFailure = null
         publishState()
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
@@ -321,14 +541,12 @@ class MainActivity : ComponentActivity() {
                 provider = future.get()
                 val selected = selector(lens)
                 if (provider?.hasCamera(selected) != true) {
-                    lens = if (lens == CameraSelector.LENS_FACING_BACK)
-                        CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+                    throw IllegalArgumentException("Requested lens is unavailable")
                 }
                 bindCamera()
             } catch (_: Exception) {
                 cameraReady = false
-                message = getString(R.string.camera_retry)
-                messageAction = "retry"
+                cameraFailure = ErrorCode.UNAVAILABLE
                 publishState()
             }
         }, executor)
@@ -339,6 +557,7 @@ class MainActivity : ComponentActivity() {
 
     private fun bindCamera() {
         val currentProvider = provider ?: return
+        if (!previewRequested) return
         if (!hasPermission(Manifest.permission.CAMERA)) {
             showCameraPermission()
             return
@@ -349,11 +568,10 @@ class MainActivity : ComponentActivity() {
         }
         val generation = ++bindingGeneration
         cameraReady = false
-        message = getString(R.string.camera_loading)
-        messageAction = ""
+        cameraFailure = null
         publishState()
         previewView.post {
-            if (generation != bindingGeneration || isFinishing || isDestroyed || !gate.isReady) return@post
+            if (!previewRequested || generation != bindingGeneration || isFinishing || isDestroyed || !gate.isReady) return@post
             try {
                 currentProvider.unbindAll()
                 camera = null
@@ -381,6 +599,8 @@ class MainActivity : ComponentActivity() {
                     group.addUseCase(videoCapture!!)
                 }
                 camera = currentProvider.bindToLifecycle(this, selector(lens), group.build())
+                val focusPoint = previewView.meteringPointFactory.createPoint(previewView.width / 2f, previewView.height / 2f)
+                focusSupported = camera!!.cameraInfo.isFocusMeteringSupported(FocusMeteringAction.Builder(focusPoint).build())
                 hasOtherCamera = currentProvider.hasCamera(selector(
                     if (lens == CameraSelector.LENS_FACING_BACK)
                         CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
@@ -388,46 +608,15 @@ class MainActivity : ComponentActivity() {
                 imageCapture?.flashMode = if (camera?.cameraInfo?.hasFlashUnit() == true)
                     flashMode else ImageCapture.FLASH_MODE_OFF
                 cameraReady = true
-                zoomLabel = "1×"
-                message = ""
-                messageAction = ""
+                zoomRatio = 1.0
+                if (mode == Mode.PHOTO) photoSupport = Support.SUPPORTED else videoSupport = Support.SUPPORTED
+                cameraFailure = null
             } catch (_: Exception) {
                 cameraReady = false
-                message = getString(R.string.camera_retry)
-                messageAction = "retry"
+                cameraFailure = ErrorCode.UNAVAILABLE
             }
             publishState()
         }
-    }
-
-    private fun selectMode(next: Mode) {
-        if (!gate.isReady || mode == next || provider == null) return
-        mode = next
-        bindCamera()
-    }
-
-    private fun switchCamera() {
-        if (!gate.isReady || !hasOtherCamera) return
-        lens = if (lens == CameraSelector.LENS_FACING_BACK)
-            CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
-        bindCamera()
-    }
-
-    private fun switchFlash() {
-        val currentCamera = camera ?: return
-        if (!cameraReady || !currentCamera.cameraInfo.hasFlashUnit()) return
-        if (mode == Mode.VIDEO) {
-            torchOn = !torchOn
-            currentCamera.cameraControl.enableTorch(torchOn)
-        } else {
-            flashMode = when (flashMode) {
-                ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
-                ImageCapture.FLASH_MODE_ON -> ImageCapture.FLASH_MODE_OFF
-                else -> ImageCapture.FLASH_MODE_AUTO
-            }
-            imageCapture?.flashMode = flashMode
-        }
-        publishState()
     }
 
     private fun onShutter() {
@@ -446,16 +635,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun continueCapture() {
-        if (!cameraReady || !gate.isReady) return
+        if (!cameraReady || !gate.isReady || activeCapture == null || captureCancelled) {
+            if (activeCapture != null) finishCapture(null, "", "CANCELLED")
+            return
+        }
         if (mode == Mode.PHOTO) {
             takePhoto()
         } else if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
             startVideo(true)
         } else if (!preferences.getBoolean("asked_audio", false)) {
             preferences.edit().putBoolean("asked_audio", true).apply()
+            audioPermissionPending = true
             audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
-            toast(R.string.video_silent)
             startVideo(false)
         }
     }
@@ -472,6 +664,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun takePhoto() {
+        val operation = activeCapture ?: return
         val capture = imageCapture ?: return
         if (!gate.beginPhoto()) return
         publishState()
@@ -483,30 +676,32 @@ class MainActivity : ComponentActivity() {
         try {
             capture.takePicture(output, executor, object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(result: ImageCapture.OutputFileResults) {
-                    remember(result.savedUri, "image/jpeg")
-                    toast(R.string.saved_photo)
+                    if (activeCapture !== operation) {
+                        result.savedUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) {} }
+                        return
+                    }
                     gate.finishPhoto()
-                    captureFinished()
+                    finishCapture(result.savedUri, "image/jpeg")
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    toast(R.string.save_failed)
+                    if (activeCapture !== operation) return
                     gate.finishPhoto()
-                    captureFinished()
+                    finishCapture(null, "", "SAVE_FAILED")
                 }
             })
         } catch (_: Exception) {
             gate.finishPhoto()
-            toast(R.string.save_failed)
-            captureFinished()
+            finishCapture(null, "", "SAVE_FAILED")
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun startVideo(withAudio: Boolean) {
+        val operation = activeCapture ?: return
         val capture = videoCapture ?: return
         if (!gate.beginVideo()) return
-        durationLabel = "00:00"
+        durationSeconds = 0L
         publishState()
         try {
             val output = MediaStoreOutputOptions.Builder(
@@ -518,33 +713,39 @@ class MainActivity : ComponentActivity() {
                 pending = pending.withAudioEnabled()
             }
             recording = pending.start(executor) { event ->
+                if (activeCapture !== operation) {
+                    if (event is VideoRecordEvent.Finalize && event.outputResults.outputUri != Uri.EMPTY) {
+                        try { contentResolver.delete(event.outputResults.outputUri, null, null) } catch (_: Exception) {}
+                    }
+                    return@start
+                }
                 when (event) {
                     is VideoRecordEvent.Start -> {
                         gate.videoStarted()
                         publishState()
+                        activeCapture?.let {
+                            if (captureCancelled) backendChannel.error(it, "CANCELLED")
+                            else backendChannel.result(it, JSONObject().put("captureId", it.id))
+                        }
+                        if (captureCancelled && gate.stopVideo()) recording?.stop()
                     }
                     is VideoRecordEvent.Status -> {
                         val seconds = TimeUnit.NANOSECONDS.toSeconds(event.recordingStats.recordedDurationNanos)
-                        durationLabel = String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60)
-                        publishState()
+                        if (seconds != durationSeconds) {
+                            durationSeconds = seconds
+                            publishState()
+                        }
                     }
                     is VideoRecordEvent.Finalize -> {
                         recording = null
-                        if (event.hasError()) {
-                            toast(R.string.save_failed)
-                        } else {
-                            remember(event.outputResults.outputUri, "video/mp4")
-                            toast(R.string.saved_video)
-                        }
                         gate.finishVideo()
-                        captureFinished()
+                        finishCapture(event.outputResults.outputUri, "video/mp4", if (event.hasError()) "SAVE_FAILED" else null)
                     }
                 }
             }
         } catch (_: Exception) {
             gate.finishVideo()
-            toast(R.string.save_failed)
-            captureFinished()
+            finishCapture(null, "", "SAVE_FAILED")
         }
     }
 
@@ -575,7 +776,7 @@ class MainActivity : ComponentActivity() {
         val zoom = activeCamera.cameraInfo.zoomState.value ?: return
         val ratio = (zoom.zoomRatio * factor).coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio)
         activeCamera.cameraControl.setZoomRatio(ratio)
-        zoomLabel = String.format(Locale.US, "%.1f×", ratio).replace(".0×", "×")
+        zoomRatio = ratio.toDouble()
         publishState()
     }
 
@@ -584,7 +785,7 @@ class MainActivity : ComponentActivity() {
         preferences.edit().putString("last_uri", uri.toString()).putString("last_mime", mime).apply()
     }
 
-    private fun openGallery() {
+    private fun openGallery(): Boolean {
         val uri = preferences.getString("last_uri", null)
         val mime = preferences.getString("last_mime", "image/jpeg")
         if (uri != null) {
@@ -592,7 +793,7 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(uri), mime).apply {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 })
-                return
+                return true
             } catch (_: Exception) {
                 // The file or viewer may have been removed; use the system media picker.
             }
@@ -603,44 +804,26 @@ class MainActivity : ComponentActivity() {
                 putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
                 addCategory(Intent.CATEGORY_OPENABLE)
             })
+            return true
         } catch (_: Exception) {
-            toast(R.string.gallery_unavailable)
+            return false
         }
     }
 
     private fun toast(resource: Int) = Toast.makeText(this, resource, Toast.LENGTH_SHORT).show()
 
     private fun publishState() {
-        if (!webReady || isDestroyed) return
-        val isRecording = gate.state == CaptureGate.State.RECORDING
-        val isStopping = gate.state == CaptureGate.State.STOPPING_VIDEO
-        val selectionEnabled = gate.isReady && provider != null && hasPermission(Manifest.permission.CAMERA)
-        val flashAvailable = cameraReady && camera?.cameraInfo?.hasFlashUnit() == true
-        val flashText = if (mode == Mode.VIDEO) {
-            getString(if (torchOn) R.string.torch_on else R.string.torch_off)
-        } else {
-            getString(when (flashMode) {
-                ImageCapture.FLASH_MODE_ON -> R.string.flash_on
-                ImageCapture.FLASH_MODE_OFF -> R.string.flash_off
-                else -> R.string.flash_auto
-            })
+        if (isDestroyed) return
+        val state = backendSnapshot()
+        backendChannel.observe(state)
+        pendingStart?.let {
+            if (state.phase == CameraPhase.LIVE) {
+                pendingStart = null
+                backendChannel.result(it)
+            } else if (state.phase == CameraPhase.FAILED) {
+                pendingStart = null
+                backendChannel.error(it, "UNAVAILABLE")
+            }
         }
-        val state = JSONObject()
-            .put("mode", if (mode == Mode.PHOTO) "photo" else "video")
-            .put("ready", cameraReady)
-            .put("selectionEnabled", selectionEnabled)
-            .put("shutterEnabled", cameraReady && (gate.isReady || isRecording))
-            .put("recording", isRecording || isStopping)
-            .put("duration", durationLabel)
-            .put("switchEnabled", selectionEnabled && hasOtherCamera)
-            .put("flashEnabled", flashAvailable)
-            .put("flash", flashText)
-            .put("zoom", zoomLabel)
-            .put("message", message)
-            .put("messageEnabled", messageAction.isNotEmpty())
-            .put("insets", JSONObject()
-                .put("top", insetsTop).put("bottom", insetsBottom)
-                .put("left", insetsLeft).put("right", insetsRight))
-        interfaceView.evaluateJavascript("window.PureCamera && window.PureCamera.render(" + state + ")", null)
     }
 }

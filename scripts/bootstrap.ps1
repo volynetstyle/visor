@@ -45,8 +45,11 @@ $env:PIXI_HOME = Join-Path $pixiRoot "home"
 $env:PIXI_CACHE_DIR = Join-Path $pixiRoot "cache"
 Push-Location $root
 try {
-    & $pixi install --locked
+    & $pixi install --locked --all
     if ($LASTEXITCODE -ne 0) { throw "Pixi install failed ($LASTEXITCODE)" }
+    $env:npm_config_cache = Join-Path $root ".npm-cache"
+    & $pixi run --locked --environment web-check web-install
+    if ($LASTEXITCODE -ne 0) { throw "Local web build tools install failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location
 }

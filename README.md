@@ -14,11 +14,19 @@
 
 - `app/src/main/java/io/volynetstyle/nightfield/MainActivity.kt` — разрешения,
   CameraX, предпросмотр, съёмка, сохранение файлов, фокус и масштабирование.
-- `web/www/` — только разметка, стили и отображение состояния. Прозрачный
-  WebView находится поверх нативного предпросмотра и передаёт нажатия и жесты
-  в Kotlin. Для страницы используются локальные ресурсы; сеть не требуется.
+- `packages/visor-contract/` — общий семантический контракт, canonical definition
+  и generated TypeScript/Kotlin/Swift value types.
+- `web/www/backend.js` и `runtime.js` — переносимые порты, ordering/cancellation
+  barriers, общая логика HUD и capabilities. `platform.js` подключает Android.
+  WebView рисует интерфейс поверх нативного preview, устройство выполняет Kotlin.
 - `CaptureGate.kt` — последовательность действий во время асинхронного
   сохранения фото и записи видео.
+
+Инварианты скорости UI и бюджеты описаны в [web/PERFORMANCE.md](web/PERFORMANCE.md).
+Они проверяются автоматически в Android preBuild. Отдельная локальная среда
+Pixi `web-check` содержит Node 22. Закреплённый esbuild устанавливается локально
+только для сборки; runtime-библиотек нет. В APK включается `web/build/`.
+Описание архитектуры и replay: [visor-contract](packages/visor-contract/README.md).
 
 ## Сборка в Windows
 

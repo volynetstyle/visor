@@ -5,6 +5,7 @@
 /build/
 /local.properties
 /web/node_modules/
+/web/build/
 /.npm-cache/
 /.android-sdk/
 /.kotlin/

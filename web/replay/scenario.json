@@ -1,0 +1,18 @@
+{
+  "name": "Pure Camera: normal capture, background and recovery",
+  "initial": {
+    "phase": "idle", "mode": "photo", "lens": "back", "captureId": null,
+    "durationMs": 0, "zoomRatio": 1, "flash": "auto", "torch": false,
+    "active": true, "access": "granted", "errorCode": null,
+    "capabilities": {
+      "photo": "supported", "video": "supported", "rawStream": "unsupported",
+      "linearVideo": "unsupported", "accumulation": "unsupported", "motion": "unsupported",
+      "flash": true, "switchLens": true, "focus": true, "minZoom": 1, "maxZoom": 8
+    },
+    "insets": { "top": 24, "bottom": 24, "left": 0, "right": 0 }
+  },
+  "timeline": [
+    { "at": 5000, "patch": { "active": false } },
+    { "at": 6000, "patch": { "active": true } }
+  ]
+}

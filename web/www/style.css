@@ -104,7 +104,9 @@ button[hidden],
   font:
     12px ui-monospace,
     monospace;
+  font-variant-numeric: tabular-nums;
 }
+.recording time { width: 7ch; }
 .recording span {
   width: 8px;
   height: 8px;
@@ -176,14 +178,10 @@ button[hidden],
   height: 62px;
   border: 1px solid #fff;
   border-radius: 3px;
-  transform: translate(-50%, -50%) scale(1.2);
+  left: 0;
+  top: 0;
   opacity: 0;
   pointer-events: none;
-}
-.focus.visible {
-  opacity: 0.9;
-  transform: translate(-50%, -50%) scale(1);
-  transition: transform 0.18s ease-out;
 }
 .message {
   position: absolute;
@@ -213,14 +211,16 @@ button[hidden],
   display: flex;
   flex-direction: column;
   align-items: center;
+  contain: layout style;
 }
 .zoom {
-  min-width: 38px;
+  width: 66px;
   padding: 6px 10px;
   border-radius: 20px;
   background: #1010108a;
   font-size: 12px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 .modes {
   display: flex;
@@ -278,22 +278,16 @@ button[hidden],
   height: 56px;
   border-radius: 50%;
   background: #fff;
-  transition:
-    width 0.15s,
-    height 0.15s,
-    border-radius 0.15s,
-    background 0.15s;
+  transition: transform 0.15s ease-out;
 }
 .shutter.video span {
-  width: 52px;
-  height: 52px;
+  transform: scale(0.93);
   background: #ef4141;
 }
 .shutter.recording span {
-  width: 26px;
-  height: 26px;
+  transform: scale(0.465);
   background: #ef4141;
-  border-radius: 5px;
+  border-radius: 10px;
 }
 
 @media (max-height: 500px) and (orientation: landscape) {
@@ -326,11 +320,13 @@ button[hidden],
     height: 44px;
   }
   .shutter.video span {
-    width: 42px;
-    height: 42px;
+    transform: scale(0.955);
   }
   .shutter.recording span {
-    width: 23px;
-    height: 23px;
+    transform: scale(0.523);
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shutter span { transition: none; }
 }
