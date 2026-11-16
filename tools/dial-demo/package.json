@@ -1,0 +1,19 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node build-dom.cjs && node serve.cjs",
+    "build": "node build-dom.cjs",
+    "test": "node --test ui.test.js dom.test.js"
+  },
+  "dependencies": {
+    "@visor/framework": "file:../@framework",
+    "reflex-quant": "1.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.13",
+    "babel-plugin-jsx-dom-expressions": "0.40.14",
+    "esbuild": "0.28.2",
+    "happy-dom": "21.0.4"
+  }
+}

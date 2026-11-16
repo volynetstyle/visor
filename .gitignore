@@ -10,3 +10,6 @@
 /platforms/android/build/
 /hud/build/
 /tools/node_modules/
+/tools/dial-demo/node_modules/
+/tools/@framework/node_modules/
+/tools/@framework/dist/

@@ -1,0 +1,28 @@
+{
+  "name": "@visor/framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": ["dist", "src", "README.md"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./frame": { "types": "./dist/frame.d.ts", "import": "./dist/frame.js" },
+    "./compiler": { "types": "./dist/compiler.d.ts", "import": "./dist/compiler.js" },
+    "./jsx-runtime": { "types": "./dist/jsx-runtime.d.ts", "import": "./dist/jsx-runtime.js" }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --emitDeclarationOnly && node scripts/build.mjs",
+    "test": "npm run build && tsc -p test/tsconfig.json && node --test test/*.test.mjs"
+  },
+  "dependencies": { "dom-expressions": "0.40.14" },
+  "peerDependencies": { "reflex-quant": "1.2.0" },
+  "devDependencies": {
+    "reflex-quant": "1.2.0",
+    "typescript": "5.9.3",
+    "esbuild": "0.28.2",
+    "@babel/core": "7.29.13",
+    "babel-plugin-jsx-dom-expressions": "0.40.14",
+    "happy-dom": "21.0.4"
+  }
+}
